@@ -416,3 +416,10 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Live2D models
+examples/live2d_models/
+
+# test files
+examples/*.mp4
+examples/*.json

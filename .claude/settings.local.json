@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "D:\\Project\\Other\\insightface",
+      "D:\\Project\\Other\\live2d-py"
+    ],
+    "allow": [
+      "Bash(python:*)"
+    ]
+  }
+}
