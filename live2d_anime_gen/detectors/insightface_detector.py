@@ -1,11 +1,12 @@
 """InsightFace detector wrapper for 106-point landmark detection."""
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union, Iterator, List
 import numpy as np
 import torch
 from insightface.app import FaceAnalysis
 
 from ..core.base_detector import BaseDetector
+from ..processors.stream_utils import is_iterator, apply_to_stream
 
 
 class InsightFaceDetector(BaseDetector):
@@ -33,9 +34,32 @@ class InsightFaceDetector(BaseDetector):
         
         self._num_landmarks = 106
     
-    def detect(self, image: np.ndarray) -> Optional[torch.Tensor]:
+    def detect(self, input_data: Union[np.ndarray, Iterator[np.ndarray], List[np.ndarray]]) -> Union[Optional[torch.Tensor], Iterator[Optional[torch.Tensor]], List[Optional[torch.Tensor]]]:
         """
-        Detect 106 facial landmarks in the image.
+        Unified detection interface supporting single frame, batch, and streaming modes.
+        
+        Args:
+            input_data: Input image(s) - single array, list, or iterator
+            
+        Returns:
+            - Single frame: Optional[torch.Tensor]
+            - Multiple frames: Iterator or List of Optional[torch.Tensor]
+        """
+        # Handle single frame
+        if isinstance(input_data, np.ndarray):
+            return self._detect_single(input_data)
+        
+        # Handle iterator/generator (streaming mode)
+        elif is_iterator(input_data):
+            return apply_to_stream(input_data, self._detect_single, preserve_none=True)
+        
+        # Handle list (batch mode)
+        else:
+            return [self._detect_single(image) for image in input_data]
+    
+    def _detect_single(self, image: np.ndarray) -> Optional[torch.Tensor]:
+        """
+        Detect 106 facial landmarks in a single image.
         
         Args:
             image: Input image as numpy array (H, W, C) in BGR format
@@ -79,9 +103,9 @@ class InsightFaceDetector(BaseDetector):
         """Return the number of landmarks (106)."""
         return self._num_landmarks
     
-    def detect_multiple(self, image: np.ndarray, max_faces: int = 1) -> list[Optional[torch.Tensor]]:
+    def detect_multiple_faces(self, image: np.ndarray, max_faces: int = 1) -> List[Optional[torch.Tensor]]:
         """
-        Detect landmarks for multiple faces.
+        Detect landmarks for multiple faces in a single image.
         
         Args:
             image: Input image as numpy array (H, W, C) in BGR format

@@ -23,6 +23,7 @@ A Python package for generating Live2D animations from multiple input sources. C
 - **torch** (pip): GPU tensor operations and future ML model inference
 - **insightface** (pip): 106-point facial landmark detection (CUDA only)
 - **onnxruntime-gpu** (pip): GPU-accelerated inference for InsightFace models
+- **ijson** (pip): Streaming JSON parser for memory-efficient data I/O
 
 ### Example Dependencies (for Live2D rendering)
 - **live2d-py** (pip): Live2D v3 model runtime and rendering

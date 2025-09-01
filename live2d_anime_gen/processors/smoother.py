@@ -1,10 +1,11 @@
 """Parameter smoothing utilities for temporal filtering."""
 
-from typing import Optional, Deque
+from typing import Optional, Deque, Union, Iterator, List
 from collections import deque
 import torch
 
 from ..core.types import Live2DParameters
+from .stream_utils import is_iterator, apply_to_stream
 
 
 class ParameterSmoother:
@@ -36,9 +37,32 @@ class ParameterSmoother:
         self.kalman_state: Optional[Live2DParameters] = None
         self.kalman_covariance: float = 1.0
     
-    def smooth(self, params: Live2DParameters) -> Live2DParameters:
+    def smooth(self, input_data: Union[Live2DParameters, Iterator[Optional[Live2DParameters]], List[Optional[Live2DParameters]]]) -> Union[Live2DParameters, Iterator[Optional[Live2DParameters]], List[Optional[Live2DParameters]]]:
         """
-        Apply smoothing to parameters.
+        Unified smoothing interface supporting single parameters, batch, and streaming modes.
+        
+        Args:
+            input_data: Input parameters - single object, list, or iterator of Optional[Live2DParameters]
+            
+        Returns:
+            - Single input: Live2DParameters
+            - Multiple inputs: Iterator or List of Optional[Live2DParameters]
+        """
+        # Handle single parameters
+        if isinstance(input_data, Live2DParameters):
+            return self._smooth_single(input_data)
+        
+        # Handle iterator/generator (streaming mode)
+        elif is_iterator(input_data):
+            return apply_to_stream(input_data, lambda params: self._smooth_single(params) if params is not None else None, preserve_none=True)
+        
+        # Handle list (batch mode) 
+        else:
+            return [self._smooth_single(params) if params is not None else None for params in input_data]
+    
+    def _smooth_single(self, params: Live2DParameters) -> Live2DParameters:
+        """
+        Apply smoothing to single frame parameters.
         
         Args:
             params: Current frame parameters

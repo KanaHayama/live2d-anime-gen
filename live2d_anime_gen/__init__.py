@@ -12,7 +12,7 @@ from .detectors.insightface_detector import InsightFaceDetector
 from .mappers.face_mapper import FaceMapper
 from .processors.smoother import ParameterSmoother
 from .processors.video_io import VideoReader, VideoWriter
-from .processors.pipeline import Pipeline, DataCollector
+from .processors.pipeline import Pipeline, DataCollector, FrameData
 from .processors.data_io import DataExporter, DataLoader, detect_input_type, InputType
 from .renderers.live2d_renderer import Live2DRenderer
 
@@ -25,6 +25,7 @@ __all__ = [
     "VideoWriter",
     "Pipeline",
     "DataCollector",
+    "FrameData",
     "InputType",
     "DataExporter",
     "DataLoader",

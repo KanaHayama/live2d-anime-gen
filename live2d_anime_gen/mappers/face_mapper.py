@@ -1,11 +1,12 @@
 """Face landmark to Live2D parameter mapper with independent parameter calculation."""
 
-from typing import Tuple
+from typing import Tuple, Optional, Union, Iterator, List
 import torch
 
 from ..core.base_mapper import BaseLandmarkMapper
 from ..core.types import Live2DParameters
 from ..core.constants import LANDMARK_INDICES, LANDMARK_POINTS
+from ..processors.stream_utils import is_iterator, apply_to_stream
 
 
 class FaceMapper(BaseLandmarkMapper):
@@ -34,10 +35,38 @@ class FaceMapper(BaseLandmarkMapper):
         self._face_size_alpha = 0.95  # Smoothing for face size
     
     def map(self, 
-            landmarks: torch.Tensor,
-            image_shape: Tuple[int, int]) -> Live2DParameters:
+            input_data: Union[torch.Tensor, Iterator[Optional[torch.Tensor]], List[Optional[torch.Tensor]]],
+            image_shape: Optional[Tuple[int, int]] = None) -> Union[Live2DParameters, Iterator[Optional[Live2DParameters]], List[Optional[Live2DParameters]]]:
         """
-        Map 106 facial landmarks to Live2D parameters.
+        Unified mapping interface supporting single landmarks, batch, and streaming modes.
+        
+        Args:
+            input_data: Input landmarks - single tensor, list, or iterator of Optional[torch.Tensor]
+            image_shape: Original image shape (height, width) - required for single input
+            
+        Returns:
+            - Single input: Live2DParameters
+            - Multiple inputs: Iterator or List of Optional[Live2DParameters]
+        """
+        # Handle single landmarks tensor
+        if isinstance(input_data, torch.Tensor):
+            if image_shape is None:
+                raise ValueError("image_shape is required for single tensor input")
+            return self._map_single(input_data, image_shape)
+        
+        # Handle iterator/generator (streaming mode)
+        elif is_iterator(input_data):
+            return apply_to_stream(input_data, lambda lm: self._map_single(lm, image_shape) if lm is not None else None, preserve_none=True)
+        
+        # Handle list (batch mode) 
+        else:
+            return [self._map_single(lm, image_shape) if lm is not None else None for lm in input_data]
+    
+    def _map_single(self, 
+                   landmarks: torch.Tensor,
+                   image_shape: Tuple[int, int]) -> Live2DParameters:
+        """
+        Map 106 facial landmarks to Live2D parameters for a single frame.
         
         Each parameter is calculated independently:
         - Eye openness: Based on eye aspect ratio only

@@ -17,10 +17,10 @@ Example:
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional, List, Iterator, Tuple
+from typing import Optional, Iterator, Tuple, Union
 import torch
 import numpy as np
-import cv2
+from tqdm import tqdm
 
 # Import our package
 sys.path.append(str(Path(__file__).parent.parent))
@@ -39,6 +39,7 @@ from live2d_anime_gen import (
     detect_input_type,
     Live2DParameters
 )
+from live2d_anime_gen.processors.data_io import StreamingJSONWriter
 
 
 def parse_args() -> argparse.Namespace:
@@ -151,220 +152,22 @@ Examples:
         help="Save landmark visualization video"
     )
     
+    
     return parser.parse_args()
 
 
-def process_video_to_landmarks(
-    video_path: str,
-    detector: InsightFaceDetector,
-    show_progress: bool = True
-) -> Tuple[List[Optional[torch.Tensor]], VideoReader]:
-    """
-    Process video to extract landmarks.
-    
-    Returns:
-        Tuple of (landmarks list, video reader for metadata)
-    """
-    print("📹 Processing video to extract landmarks...")
-    
-    reader = VideoReader(video_path)
-    print(f"  Video: {reader.width}x{reader.height}, {reader.fps} fps, {reader.frame_count} frames")
-    
-    # Create pipeline and collector
-    pipeline = Pipeline()
-    collector = DataCollector()
-    
-    # Process frames
-    frames = reader.read_frames(show_progress=show_progress)
-    landmarks_stream = pipeline.detect_landmarks(frames, detector)
-    
-    # Collect landmarks
-    collected_stream = collector.collect(
-        ((frame, lm, None, None) for frame, lm in landmarks_stream),
-        collect_landmarks=True
-    )
-    
-    # Consume the stream
-    for _ in collected_stream:
-        pass
-    
-    print(f"✓ Extracted landmarks from {len(collector.landmarks)} frames")
-    
-    # Count successful detections
-    valid_count = sum(1 for lm in collector.landmarks if lm is not None)
-    print(f"  Valid detections: {valid_count}/{len(collector.landmarks)} ({valid_count*100/len(collector.landmarks):.1f}%)")
-    
-    return collector.landmarks, reader
 
 
-def process_landmarks_to_parameters(
-    landmarks: List[Optional[torch.Tensor]],
-    mapper: FaceMapper,
-    smoother: ParameterSmoother,
-    image_shape: Tuple[int, int]
-) -> List[Optional[Live2DParameters]]:
-    """
-    Process landmarks to Live2D parameters.
-    """
-    print("🎯 Mapping landmarks to Live2D parameters...")
-    
-    parameters = []
-    for lm in landmarks:
-        if lm is not None:
-            params = mapper.map(lm, image_shape)
-            params = smoother.smooth(params)
-        else:
-            params = None
-        parameters.append(params)
-    
-    valid_count = sum(1 for p in parameters if p is not None)
-    print(f"✓ Generated parameters for {valid_count} frames")
-    
-    return parameters
 
 
-def process_parameters_to_video(
-    parameters: List[Optional[Live2DParameters]],
-    renderer: Live2DRenderer,
-    output_path: str,
-    fps: float,
-    show_progress: bool = True
-):
-    """
-    Render Live2D parameters to video.
-    """
-    print("🎨 Rendering Live2D animation...")
-    
-    # Initialize renderer
-    renderer.initialize()
-    
-    # Create video writer
-    width, height = renderer.canvas_size
-    writer = VideoWriter(output_path, fps, (width, height))
-    
-    # Render frames
-    def render_frames():
-        for i, params in enumerate(parameters):
-            if params is not None:
-                frame = renderer.render(params)
-                # Convert RGB to BGR
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            else:
-                # Create black frame for missing parameters
-                frame = np.zeros((height, width, 3), dtype=np.uint8)
-            yield frame
-    
-    writer.write_frames(
-        render_frames(),
-        total=len(parameters),
-        show_progress=show_progress
-    )
-    
-    writer.close()
-    print(f"✓ Saved video to: {output_path}")
 
 
-def process_landmarks_to_video(
-    landmarks: List[Optional[torch.Tensor]],
-    output_path: str,
-    fps: float,
-    canvas_size: Tuple[int, int] = (1280, 720),
-    show_progress: bool = True
-):
-    """
-    Render landmarks visualization video on black background.
-    Expects landmarks in [0,1] normalized coordinates.
-    """
-    # Create video writer
-    writer = VideoWriter(output_path, fps, canvas_size)
-    
-    def render_landmark_frames():
-        for i, lm in enumerate(landmarks):
-            # Create black frame
-            height, width = canvas_size[1], canvas_size[0]
-            frame = np.zeros((height, width, 3), dtype=np.uint8)
-            
-            if lm is not None:
-                # Draw landmarks on frame
-                lm_np = lm.cpu().numpy()  # Convert to numpy for OpenCV
-                
-                # Convert [0, 1] normalized coordinates to pixel coordinates
-                lm_pixels = np.copy(lm_np)
-                lm_pixels[:, 0] = lm_np[:, 0] * width   # x coordinates
-                lm_pixels[:, 1] = lm_np[:, 1] * height  # y coordinates
-                
-                # Draw different facial parts in different colors
-                colors = {
-                    'jaw': (255, 255, 255),        # White
-                    'left_eye': (0, 255, 0),       # Green
-                    'right_eye': (0, 255, 0),      # Green
-                    'nose': (255, 0, 0),           # Blue
-                    'mouth': (0, 0, 255),          # Red
-                    'left_eyebrow': (255, 255, 0), # Cyan
-                    'right_eyebrow': (255, 255, 0), # Cyan
-                    'left_iris': (255, 0, 255),    # Magenta
-                    'right_iris': (255, 0, 255),   # Magenta
-                    'extra': (128, 128, 128),      # Gray
-                }
-                
-                # Draw landmarks as colored numbers (no circles)
-                from live2d_anime_gen.core.constants import LANDMARK_INDICES
-                
-                # First, determine color for each point
-                point_colors = {}
-                for part, indices in LANDMARK_INDICES.items():
-                    if part in colors:
-                        color = colors[part]
-                        for idx in indices:
-                            point_colors[idx] = color
-                
-                # Draw all landmarks as colored numbers
-                for idx in range(len(lm_pixels)):
-                    x, y = int(lm_pixels[idx, 0]), int(lm_pixels[idx, 1])
-                    if 0 <= x < width and 0 <= y < height:
-                        # Get color for this point, default to green if not assigned
-                        text_color = point_colors.get(idx, (0, 255, 0))
-                        
-                        # Draw the index number with colored text
-                        font = cv2.FONT_HERSHEY_SIMPLEX
-                        font_scale = 0.5
-                        font_thickness = 2  # Thicker text for better visibility
-                        
-                        # Get text size to center it on the landmark point
-                        text = str(idx)
-                        (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
-                        
-                        # Center text on the landmark point
-                        text_x = x - text_width // 2
-                        text_y = y + text_height // 2
-                        
-                        # Make sure text stays within frame bounds
-                        if text_x < 0:
-                            text_x = 0
-                        elif text_x + text_width > width:
-                            text_x = width - text_width
-                        if text_y - text_height < 0:
-                            text_y = text_height
-                        elif text_y > height:
-                            text_y = height
-                            
-                        cv2.putText(frame, text, (text_x, text_y), font, font_scale, text_color, font_thickness)
-                
-            
-            yield frame
-    
-    writer.write_frames(
-        render_landmark_frames(),
-        total=len(landmarks),
-        show_progress=show_progress
-    )
-    
-    writer.close()
-    print(f"✓ Saved landmark video to: {output_path}")
 
 
-def main():
-    """Main execution function."""
+
+
+def main() -> None:
+    """Main execution function - unified streaming processing."""
     args = parse_args()
     
     # Detect input type
@@ -373,188 +176,275 @@ def main():
     
     show_progress = not args.no_progress
     
-    # Initialize components as needed
-    detector = None
-    mapper = None
-    smoother = None
-    renderer = None
-    
-    # Process based on input type
-    landmarks = None
-    parameters = None
-    video_metadata = None
-    
     try:
-        # Step 1: Get landmarks (from video or file)
-        if input_type == InputType.VIDEO:
-            # Initialize detector
-            detector = InsightFaceDetector(det_size=tuple(args.det_size))
-            print("✓ Initialized InsightFace detector")
+        # Unified processing pipeline for all input types
+        process_pipeline(args, input_type, show_progress)
             
-            # Process video to landmarks
-            landmarks, video_reader = process_video_to_landmarks(
-                args.input,
-                detector,
-                show_progress
-            )
-            video_metadata = {
-                'fps': video_reader.fps,
-                'width': video_reader.width,
-                'height': video_reader.height
-            }
-            video_reader.close()
-            
-        elif input_type == InputType.LANDMARKS:
-            # Load landmarks from file
-            print("📁 Loading landmarks from file...")
-            landmarks, video_metadata = DataLoader.load_landmarks(args.input)
-            print(f"✓ Loaded {len(landmarks)} landmark frames")
-            
-            # Check if we have complete metadata
-            if not video_metadata or 'fps' not in video_metadata:
-                raise ValueError(f"Landmarks file {args.input} is missing required fps metadata. Please regenerate the landmarks file.")
-        
-        # Save landmarks if requested
-        if landmarks and args.save_landmarks:
-            print(f"💾 Saving landmarks to: {args.save_landmarks}")
-            DataExporter.export_landmarks(
-                landmarks, 
-                args.save_landmarks, 
-                video_metadata['fps'],
-                video_metadata['width'],
-                video_metadata['height']
-            )
-            print("✓ Landmarks saved")
-        
-        # Create landmark visualization video if requested (right after landmarks are ready)
-        if landmarks and args.save_landmark_video:
-            print(f"🎯 Creating landmark visualization video...")
-            # Use original video dimensions for landmark visualization
-            canvas_width = video_metadata.get('width', args.resolution[0])
-            canvas_height = video_metadata.get('height', args.resolution[1])
-            
-            # Landmarks are always in [0,1] range at this point:
-            # - From video: normalized by detector during detection  
-            # - From JSON: loaded as [0,1] normalized coordinates
-            process_landmarks_to_video(
-                landmarks,
-                args.save_landmark_video,
-                video_metadata.get('fps'),
-                (canvas_width, canvas_height),
-                show_progress
-            )
-        
-        # Step 2: Get parameters (from landmarks or file)
-        if input_type in [InputType.VIDEO, InputType.LANDMARKS]:
-            # Initialize mapper and smoother
-            mapper = FaceMapper(smooth_factor=args.smoothing)
-            smoother = ParameterSmoother(method="ema", alpha=args.smoothing)
-            print("✓ Initialized mapper and smoother")
-            
-            # Process landmarks to parameters
-            parameters = process_landmarks_to_parameters(
-                landmarks,
-                mapper,
-                smoother,
-                (video_metadata['height'], video_metadata['width'])
-            )
-            
-        elif input_type == InputType.PARAMETERS:
-            # Load parameters from file
-            print("📁 Loading parameters from file...")
-            parameters = DataLoader.load_parameters(args.input)
-            print(f"✓ Loaded {len(parameters)} parameter frames")
-            
-            # Read fps from parameters file
-            video_metadata = DataLoader.get_metadata_from_parameters(args.input)
-        
-        # Save parameters if requested
-        if parameters and args.save_parameters:
-            print(f"💾 Saving parameters to: {args.save_parameters}")
-            DataExporter.export_parameters(
-                parameters, 
-                args.save_parameters, 
-                video_metadata['fps']
-            )
-            print("✓ Parameters saved")
-        
-        # Step 3: Render to video if output specified
-        if args.output and parameters:
-            # Initialize renderer
-            model_path = Path(args.model)
-            if not model_path.exists():
-                print(f"❌ Error: Live2D model not found: {args.model}")
-                sys.exit(1)
-            
-            renderer = Live2DRenderer(
-                model_path=str(model_path),
-                canvas_size=(args.resolution[0], args.resolution[1])
-            )
-            print("✓ Initialized Live2D renderer")
-            
-            # Render to video
-            process_parameters_to_video(
-                parameters,
-                renderer,
-                args.output,
-                video_metadata.get('fps'),
-                show_progress
-            )
-        
-        # Debug information
-        if args.debug and parameters:
-            print("\n📊 Debug Information:")
-            
-            # Sample first valid parameter frame
-            first_params = next((p for p in parameters if p is not None), None)
-            if first_params:
-                print("\nFirst valid parameter frame:")
-                for field_name in first_params.__dataclass_fields__:
-                    value = getattr(first_params, field_name)
-                    if isinstance(value, torch.Tensor):
-                        print(f"  {field_name}: {value.item():.4f}")
-            
-            # Statistics
-            valid_params = [p for p in parameters if p is not None]
-            if valid_params:
-                print(f"\nParameter statistics ({len(valid_params)} valid frames):")
-                
-                # Collect values for each parameter
-                param_stats = {}
-                for field_name in valid_params[0].__dataclass_fields__:
-                    values = []
-                    for p in valid_params:
-                        val = getattr(p, field_name)
-                        if isinstance(val, torch.Tensor):
-                            values.append(val.item())
-                    
-                    if values:
-                        values_tensor = torch.tensor(values)
-                        param_stats[field_name] = {
-                            'min': values_tensor.min().item(),
-                            'max': values_tensor.max().item(),
-                            'mean': values_tensor.mean().item(),
-                            'std': values_tensor.std().item() if len(values) > 1 else 0
-                        }
-                
-                for param_name, stats in param_stats.items():
-                    print(f"  {param_name}:")
-                    print(f"    Range: [{stats['min']:.3f}, {stats['max']:.3f}]")
-                    print(f"    Mean: {stats['mean']:.3f}, Std: {stats['std']:.3f}")
-        
-        print("\n🎉 Pipeline completed successfully!")
-        
     except Exception as e:
-        print(f"\n❌ Error: {str(e)}")
+        print(f"❌ Error: {e}")
         if args.debug:
             import traceback
             traceback.print_exc()
         sys.exit(1)
     
+    print("🎉 Pipeline completed successfully!")
+
+
+def create_landmark_frame(landmarks: Optional[torch.Tensor], canvas_size: Tuple[int, int]) -> torch.Tensor:
+    """Create a single landmark visualization frame."""
+    import numpy as np
+    import cv2
+    
+    height, width = canvas_size[1], canvas_size[0]
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+    
+    if landmarks is not None:
+        # Draw landmarks on frame
+        lm_np = landmarks.cpu().numpy()  # Convert to numpy for OpenCV
+        
+        # Convert [0, 1] normalized coordinates to pixel coordinates
+        lm_pixels = np.copy(lm_np)
+        lm_pixels[:, 0] = lm_np[:, 0] * width   # x coordinates
+        lm_pixels[:, 1] = lm_np[:, 1] * height  # y coordinates
+        
+        # Draw landmarks as colored numbers
+        colors = {
+            'jaw': (255, 255, 255),        # White
+            'left_eye': (0, 255, 0),       # Green
+            'right_eye': (0, 255, 0),      # Green
+            'nose': (255, 0, 0),           # Blue
+            'mouth': (0, 0, 255),          # Red
+            'left_eyebrow': (255, 255, 0), # Cyan
+            'right_eyebrow': (255, 255, 0), # Cyan
+            'left_iris': (255, 0, 255),    # Magenta
+            'right_iris': (255, 0, 255),   # Magenta
+            'extra': (128, 128, 128),      # Gray
+        }
+        
+        # Draw landmarks as colored numbers (no circles)
+        from live2d_anime_gen.core.constants import LANDMARK_INDICES
+        
+        # First, determine color for each point
+        point_colors = {}
+        for part, indices in LANDMARK_INDICES.items():
+            if part in colors:
+                color = colors[part]
+                for idx in indices:
+                    point_colors[idx] = color
+        
+        # Draw all landmarks as colored numbers
+        for idx in range(len(lm_pixels)):
+            x, y = int(lm_pixels[idx, 0]), int(lm_pixels[idx, 1])
+            if 0 <= x < width and 0 <= y < height:
+                # Get color for this point, default to green if not assigned
+                text_color = point_colors.get(idx, (0, 255, 0))
+                
+                # Draw the index number with colored text
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.5
+                font_thickness = 2  # Thicker text for better visibility
+                
+                # Get text size to center it on the landmark point
+                text = str(idx)
+                (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
+                
+                # Center text on the landmark point
+                text_x = x - text_width // 2
+                text_y = y + text_height // 2
+                
+                # Make sure text stays within frame bounds
+                if text_x < 0:
+                    text_x = 0
+                elif text_x + text_width > width:
+                    text_x = width - text_width
+                if text_y - text_height < 0:
+                    text_y = text_height
+                elif text_y > height:
+                    text_y = height
+                    
+                cv2.putText(frame, text, (text_x, text_y), font, font_scale, text_color, font_thickness)
+    
+    return torch.from_numpy(frame)
+
+
+def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progress: bool) -> None:
+    """Unified processing pipeline for all input types."""
+    # Initialize components
+    detector = InsightFaceDetector(det_size=tuple(args.det_size))
+    mapper = FaceMapper(smooth_factor=args.smoothing)
+    smoother = ParameterSmoother(method="ema", alpha=args.smoothing)
+    print("✓ Initialized detector, mapper, and smoother")
+    
+    # Initialize renderer if output specified
+    renderer: Optional[Live2DRenderer] = None
+    if args.output:
+        model_path = Path(args.model)
+        if not model_path.exists():
+            raise ValueError(f"Live2D model not found: {args.model}")
+        
+        renderer = Live2DRenderer(
+            model_path=str(model_path),
+            canvas_size=(args.resolution[0], args.resolution[1])
+        )
+        renderer.initialize()
+        print("✓ Initialized Live2D renderer")
+    
+    # Get input metadata and create data stream
+    if input_type == InputType.VIDEO:
+        # Video input - create frame stream
+        reader = VideoReader(args.input)
+        video_metadata = {
+            'fps': reader.fps,
+            'width': reader.width,
+            'height': reader.height,
+            'frame_count': reader.frame_count
+        }
+        
+        def input_stream() -> Iterator[Tuple[Optional[torch.Tensor], Optional[Tuple[int, int]]]]:
+            for frame in reader.read_frames(show_progress=False):
+                # Detection
+                landmarks = detector.detect(frame)
+                yield landmarks, (frame.shape[0], frame.shape[1])  # (landmarks, image_shape)
+                
+    elif input_type == InputType.LANDMARKS:
+        # Landmarks input - create landmarks stream
+        landmarks_iterator, video_metadata = DataLoader.load_landmarks(args.input, streaming=True)
+        
+        def input_stream() -> Iterator[Tuple[Optional[torch.Tensor], Optional[Tuple[int, int]]]]:
+            for landmarks in landmarks_iterator:
+                image_shape = (video_metadata['height'], video_metadata['width'])
+                yield landmarks, image_shape
+                
+    elif input_type == InputType.PARAMETERS:
+        # Parameters input - create parameters stream (skip mapping)
+        parameters_iterator = DataLoader.load_parameters(args.input, streaming=True)
+        video_metadata = DataLoader.get_metadata_from_parameters(args.input)
+        # Parameters don't have video dimensions, use default resolution
+        video_metadata['width'] = args.resolution[0]
+        video_metadata['height'] = args.resolution[1]
+        
+        def input_stream() -> Iterator[Tuple[Union[Optional[torch.Tensor], Optional[Live2DParameters]], Optional[Tuple[int, int]]]]:
+            for parameters in parameters_iterator:
+                yield parameters, None  # Parameters don't need image_shape
+    else:
+        raise ValueError(f"Unsupported input type: {input_type}")
+    
+    print(f"🔄 Starting processing pipeline...")
+    if input_type == InputType.VIDEO:
+        print(f"  Video: {video_metadata['width']}x{video_metadata['height']}, {video_metadata['fps']} fps, {video_metadata['frame_count']} frames")
+    else:
+        print(f"  Input: {video_metadata['width']}x{video_metadata['height']}, {video_metadata['fps']} fps, {video_metadata['frame_count']} frames")
+    
+    # Create all output writers
+    output_writer = VideoWriter(args.output, video_metadata['fps'], args.resolution) if args.output else None
+    
+    # For landmark video, use original video dimensions
+    landmark_resolution = (video_metadata['width'], video_metadata['height'])
+    landmark_writer = VideoWriter(args.save_landmark_video, video_metadata['fps'], landmark_resolution) if args.save_landmark_video else None
+    
+    # Create JSON writers for data export
+    landmarks_json_writer = None
+    parameters_json_writer = None
+    
+    if args.save_landmarks:
+        landmarks_metadata = {
+            'fps': video_metadata['fps'],
+            'width': video_metadata['width'],
+            'height': video_metadata['height']
+        }
+        landmarks_json_writer = StreamingJSONWriter(args.save_landmarks, landmarks_metadata)
+        landmarks_json_writer.__enter__()
+        print(f"💾 Writing landmarks to: {args.save_landmarks}")
+    
+    if args.save_parameters:
+        parameters_metadata = {
+            'fps': video_metadata['fps']
+        }
+        parameters_json_writer = StreamingJSONWriter(args.save_parameters, parameters_metadata)
+        parameters_json_writer.__enter__()
+        print(f"💾 Writing parameters to: {args.save_parameters}")
+    
+    # Process frames in streaming mode
+    frame_count = 0
+    total_frames = video_metadata['frame_count']
+    progress_bar = tqdm(total=total_frames, desc="Processing frames", unit="frames") if show_progress else None
+    
+    try:
+        for data_item, image_shape in input_stream():
+            if input_type == InputType.PARAMETERS:
+                # For parameters input, data_item is already parameters
+                landmarks = None
+                parameters = data_item
+            else:
+                # For video/landmarks input, data_item is landmarks
+                landmarks = data_item
+                parameters = None
+                
+                # Write landmarks to JSON
+                if landmarks_json_writer and landmarks is not None:
+                    if isinstance(landmarks, torch.Tensor):
+                        landmarks_np = landmarks.cpu().numpy()
+                    else:
+                        landmarks_np = np.array(landmarks)
+                    landmarks_json_writer.write_item(landmarks_np.tolist())
+                elif landmarks_json_writer:
+                    landmarks_json_writer.write_item(None)
+                
+                # Mapping and smoothing (only for video/landmarks input)
+                if landmarks is not None and image_shape is not None:
+                    parameters = mapper.map(landmarks, image_shape)
+                    if parameters is not None:
+                        parameters = smoother.smooth(parameters)
+            
+            # Write parameters to JSON
+            if parameters_json_writer:
+                if parameters is not None:
+                    param_dict = {}
+                    for field_name in parameters.__dataclass_fields__:
+                        field_value = getattr(parameters, field_name)
+                        if isinstance(field_value, torch.Tensor):
+                            param_dict[field_name] = field_value.cpu().item()
+                        else:
+                            param_dict[field_name] = field_value
+                    parameters_json_writer.write_item(param_dict)
+                else:
+                    parameters_json_writer.write_item(None)
+            
+            # Render Live2D output
+            if output_writer and parameters is not None:
+                rendered_frame = renderer.render(parameters)
+                output_writer.write_frame(rendered_frame)
+            
+            # Render landmark visualization
+            if landmark_writer and landmarks is not None:
+                landmark_frame = create_landmark_frame(landmarks, landmark_resolution)
+                landmark_writer.write_frame(landmark_frame)
+            
+            frame_count += 1
+            if progress_bar:
+                progress_bar.update(1)
+                
     finally:
-        # Cleanup
-        if renderer:
-            renderer.cleanup()
+        if input_type == InputType.VIDEO:
+            reader.close()
+        if output_writer:
+            output_writer.close()
+        if landmark_writer:
+            landmark_writer.close()
+        if landmarks_json_writer:
+            landmarks_json_writer.__exit__(None, None, None)
+            print("✓ Landmarks saved")
+        if parameters_json_writer:
+            parameters_json_writer.__exit__(None, None, None)
+            print("✓ Parameters saved")
+        if progress_bar:
+            progress_bar.close()
+    
+    print(f"✓ Processing complete: {frame_count} frames processed")
+
+
+
+
 
 
 if __name__ == "__main__":

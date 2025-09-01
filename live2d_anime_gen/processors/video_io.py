@@ -1,9 +1,10 @@
 """Video I/O utilities for reading and writing video files."""
 
-from typing import Iterator, Tuple, Optional
+from typing import Iterator, Tuple, Optional, Union, List
 from pathlib import Path
 import cv2
 import numpy as np
+import torch
 from tqdm import tqdm
 
 
@@ -106,38 +107,111 @@ class VideoWriter:
         
         self.frame_count = 0
     
-    def write_frame(self, frame: np.ndarray):
+    def write(self, input_data: Union[torch.Tensor, Iterator[torch.Tensor], List[torch.Tensor]], 
+             show_progress: bool = True) -> Optional[Iterator[torch.Tensor]]:
+        """
+        Unified write interface supporting single frame, batch, and streaming modes.
+        
+        Args:
+            input_data: Input frames - single array, list, or iterator
+            show_progress: Show progress bar for batch/streaming modes
+            
+        Returns:
+            - Single frame: None
+            - Iterator input: Iterator (passthrough for chaining)
+            - List input: None
+        """
+        from .stream_utils import is_iterator
+        
+        # Handle single frame
+        if isinstance(input_data, torch.Tensor):
+            self.write_frame(input_data)
+            return None
+        
+        # Handle iterator/generator (streaming mode)
+        elif is_iterator(input_data):
+            return self._write_stream(input_data, show_progress)
+        
+        # Handle list (batch mode)
+        else:
+            self._write_batch(input_data, show_progress)
+            return None
+    
+    def write_frame(self, frame: torch.Tensor):
         """
         Write a single frame.
         
         Args:
             frame: Frame to write (BGR format)
         """
-        self.writer.write(frame)
+        # Convert torch tensor to numpy for OpenCV
+        frame_np = frame.cpu().numpy()
+        
+        if frame_np.dtype != np.uint8:
+            frame_np = (frame_np * 255).astype(np.uint8)
+        
+        self.writer.write(frame_np)
         self.frame_count += 1
     
+    def _write_stream(self, frames: Iterator[torch.Tensor], show_progress: bool) -> Iterator[torch.Tensor]:
+        """
+        Write frames from iterator with passthrough.
+        
+        Args:
+            frames: Iterator of video frames
+            show_progress: Show progress bar
+            
+        Yields:
+            Same frames (passthrough for chaining)
+        """
+        progress_bar = tqdm(desc="Writing frames", unit="frames") if show_progress else None
+        
+        try:
+            for frame in frames:
+                self.write_frame(frame)
+                
+                if progress_bar is not None:
+                    progress_bar.update(1)
+                
+                yield frame
+        finally:
+            if progress_bar is not None:
+                progress_bar.close()
+    
+    def _write_batch(self, frames: List[torch.Tensor], show_progress: bool):
+        """
+        Write frames from list.
+        
+        Args:
+            frames: List of video frames
+            show_progress: Show progress bar
+        """
+        progress_bar = tqdm(total=len(frames), desc="Writing frames") if show_progress else None
+        
+        try:
+            for frame in frames:
+                self.write_frame(frame)
+                
+                if progress_bar:
+                    progress_bar.update(1)
+        finally:
+            if progress_bar:
+                progress_bar.close()
+    
+    # Legacy method for backward compatibility
     def write_frames(self, 
-                    frames: Iterator[np.ndarray],
+                    frames: Iterator[torch.Tensor],
                     total: Optional[int] = None,
                     show_progress: bool = True):
         """
-        Write multiple frames.
+        Legacy method: Write multiple frames.
         
         Args:
             frames: Iterator of frames
             total: Total number of frames (for progress bar)
             show_progress: Show progress bar
         """
-        progress_bar = tqdm(total=total, desc="Writing frames") if show_progress and total else None
-        
-        try:
-            for frame in frames:
-                self.write_frame(frame)
-                if progress_bar:
-                    progress_bar.update(1)
-        finally:
-            if progress_bar:
-                progress_bar.close()
+        list(self._write_stream(frames, show_progress))
     
     def __enter__(self):
         return self

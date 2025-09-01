@@ -1,10 +1,10 @@
 """Live2D v3 model renderer wrapper."""
 
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Union, Iterator, List
+import torch
 import numpy as np
 import pygame
 import live2d.v3 as live2d
-from live2d.v3.params import StandardParams
 
 from ..core.types import Live2DParameters
 
@@ -65,19 +65,45 @@ class Live2DRenderer:
         
         self.initialized = True
     
-    def render(self, parameters: Live2DParameters) -> np.ndarray:
+    def render(self, input_data: Union[Live2DParameters, Iterator[Optional[Live2DParameters]], List[Optional[Live2DParameters]]]) -> Union[torch.Tensor, Iterator[Optional[torch.Tensor]], List[Optional[torch.Tensor]]]:
         """
-        Render Live2D model with given parameters.
+        Unified rendering interface supporting single parameters, batch, and streaming modes.
+        
+        Args:
+            input_data: Input parameters - single object, list, or iterator of Optional[Live2DParameters]
+            
+        Returns:
+            - Single input: torch.Tensor
+            - Multiple inputs: Iterator or List of Optional[torch.Tensor]
+        """
+        from ..processors.stream_utils import is_iterator, apply_to_stream
+        
+        # Ensure renderer is initialized
+        if not self.initialized:
+            self.initialize()
+        
+        # Handle single parameters
+        if isinstance(input_data, Live2DParameters):
+            return self._render_single(input_data)
+        
+        # Handle iterator/generator (streaming mode)
+        elif is_iterator(input_data):
+            return apply_to_stream(input_data, lambda params: self._render_single(params) if params is not None else None, preserve_none=True)
+        
+        # Handle list (batch mode) 
+        else:
+            return [self._render_single(params) if params is not None else None for params in input_data]
+    
+    def _render_single(self, parameters: Live2DParameters) -> torch.Tensor:
+        """
+        Render Live2D model with given parameters for a single frame.
         
         Args:
             parameters: Live2D parameters to apply
             
         Returns:
-            Rendered image as numpy array (H, W, C) in RGB format
+            Rendered image as torch tensor (H, W, C) in RGB format
         """
-        if not self.initialized:
-            self.initialize()
-        
         # Apply parameters to model
         self._apply_parameters(parameters)
         
@@ -104,10 +130,13 @@ class Live2DRenderer:
         Returns:
             Rendered pygame surface
         """
-        pixels = self.render(parameters)
+        pixels = self._render_single(parameters)
+        
+        # Convert torch tensor to numpy for pygame compatibility
+        pixels_np = pixels.cpu().numpy()
         
         # Convert to pygame surface
-        surface = pygame.surfarray.make_surface(pixels.swapaxes(0, 1))
+        surface = pygame.surfarray.make_surface(pixels_np.swapaxes(0, 1))
         
         return surface
     
@@ -128,7 +157,7 @@ class Live2DRenderer:
                 # Parameter might not exist in this model
                 pass
     
-    def _read_pixels(self) -> np.ndarray:
+    def _read_pixels(self) -> torch.Tensor:
         """Read pixels from OpenGL framebuffer."""
         import OpenGL.GL as gl
         
@@ -140,14 +169,18 @@ class Live2DRenderer:
             gl.GL_RGB, gl.GL_UNSIGNED_BYTE
         )
         
-        # Convert to numpy array
-        pixels = np.frombuffer(pixels, dtype=np.uint8)
-        pixels = pixels.reshape((height, width, 3))
+        # Convert to numpy first to avoid buffer warning, then to CUDA tensor
+        pixels_np = np.frombuffer(pixels, dtype=np.uint8).copy()
+        pixels_tensor = torch.from_numpy(pixels_np).cuda()
+        pixels_tensor = pixels_tensor.reshape((height, width, 3))
         
-        # Flip vertically (OpenGL convention)
-        pixels = np.flipud(pixels)
+        # Flip vertically (OpenGL convention) - GPU accelerated
+        pixels_tensor = torch.flip(pixels_tensor, dims=[0])
         
-        return pixels
+        # Convert RGB to BGR using tensor operations - GPU accelerated  
+        pixels_bgr = pixels_tensor[:, :, [2, 1, 0]]  # Swap R and B channels
+        
+        return pixels_bgr
     
     def set_expression(self, expression_name: str):
         """
