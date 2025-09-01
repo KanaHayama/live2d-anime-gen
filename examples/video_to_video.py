@@ -33,6 +33,7 @@ from live2d_anime_gen import (
     VideoWriter,
     Pipeline,
     DataCollector,
+    InputType,
     DataExporter,
     DataLoader,
     detect_input_type,
@@ -135,13 +136,6 @@ Examples:
     )
     
     # Output configuration
-    parser.add_argument(
-        "--fps",
-        type=int,
-        default=30,
-        help="Output video FPS"
-    )
-    
     parser.add_argument(
         "--resolution",
         type=int,
@@ -392,7 +386,7 @@ def main():
     
     try:
         # Step 1: Get landmarks (from video or file)
-        if input_type == 'video':
+        if input_type == InputType.VIDEO:
             # Initialize detector
             detector = InsightFaceDetector(det_size=tuple(args.det_size))
             print("✓ Initialized InsightFace detector")
@@ -410,29 +404,15 @@ def main():
             }
             video_reader.close()
             
-        elif input_type == 'landmarks':
+        elif input_type == InputType.LANDMARKS:
             # Load landmarks from file
             print("📁 Loading landmarks from file...")
-            landmarks, video_dims = DataLoader.load_landmarks(args.input)
+            landmarks, video_metadata = DataLoader.load_landmarks(args.input)
             print(f"✓ Loaded {len(landmarks)} landmark frames")
             
-            # Use video dimensions from file if available
-            if video_dims:
-                width, height = video_dims
-                print(f"  Original video dimensions: {width}x{height}")
-                video_metadata = {
-                    'fps': args.fps,
-                    'width': width,
-                    'height': height
-                }
-            else:
-                # Fallback to default resolution
-                print("  No video dimensions found, using default resolution")
-                video_metadata = {
-                    'fps': args.fps,
-                    'width': args.resolution[0],
-                    'height': args.resolution[1]
-                }
+            # Check if we have complete metadata
+            if not video_metadata or 'fps' not in video_metadata:
+                raise ValueError(f"Landmarks file {args.input} is missing required fps metadata. Please regenerate the landmarks file.")
         
         # Save landmarks if requested
         if landmarks and args.save_landmarks:
@@ -440,9 +420,9 @@ def main():
             DataExporter.export_landmarks(
                 landmarks, 
                 args.save_landmarks, 
-                'json',
-                video_metadata.get('width') if video_metadata else None,
-                video_metadata.get('height') if video_metadata else None
+                video_metadata['fps'],
+                video_metadata['width'],
+                video_metadata['height']
             )
             print("✓ Landmarks saved")
         
@@ -459,13 +439,13 @@ def main():
             process_landmarks_to_video(
                 landmarks,
                 args.save_landmark_video,
-                video_metadata.get('fps', args.fps),
+                video_metadata.get('fps'),
                 (canvas_width, canvas_height),
                 show_progress
             )
         
         # Step 2: Get parameters (from landmarks or file)
-        if input_type in ['video', 'landmarks']:
+        if input_type in [InputType.VIDEO, InputType.LANDMARKS]:
             # Initialize mapper and smoother
             mapper = FaceMapper(smooth_factor=args.smoothing)
             smoother = ParameterSmoother(method="ema", alpha=args.smoothing)
@@ -479,20 +459,23 @@ def main():
                 (video_metadata['height'], video_metadata['width'])
             )
             
-        elif input_type == 'parameters':
+        elif input_type == InputType.PARAMETERS:
             # Load parameters from file
             print("📁 Loading parameters from file...")
             parameters = DataLoader.load_parameters(args.input)
             print(f"✓ Loaded {len(parameters)} parameter frames")
             
-            # Use provided FPS for output
-            video_metadata = {'fps': args.fps}
+            # Read fps from parameters file
+            video_metadata = DataLoader.get_metadata_from_parameters(args.input)
         
         # Save parameters if requested
         if parameters and args.save_parameters:
             print(f"💾 Saving parameters to: {args.save_parameters}")
-            format = 'pickle' if args.save_parameters.endswith('.pkl') else 'json'
-            DataExporter.export_parameters(parameters, args.save_parameters, format)
+            DataExporter.export_parameters(
+                parameters, 
+                args.save_parameters, 
+                video_metadata['fps']
+            )
             print("✓ Parameters saved")
         
         # Step 3: Render to video if output specified
@@ -514,7 +497,7 @@ def main():
                 parameters,
                 renderer,
                 args.output,
-                video_metadata.get('fps', args.fps),
+                video_metadata.get('fps'),
                 show_progress
             )
         
