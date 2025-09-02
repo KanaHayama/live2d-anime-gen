@@ -2,4 +2,6 @@
 
 from .live2d_renderer import Live2DRenderer
 
-__all__ = ["Live2DRenderer"]
+__all__ = [
+    "Live2DRenderer",
+]

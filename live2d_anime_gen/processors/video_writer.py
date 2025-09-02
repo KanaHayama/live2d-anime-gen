@@ -1,69 +1,9 @@
-"""Video I/O utilities for reading and writing video files."""
+"""Video writer for writing video files using NVENC hardware acceleration."""
 
-from typing import Iterator, Tuple
+from typing import Tuple, Optional, Any
 from pathlib import Path
 import torch
 import PyNvVideoCodec as nvc
-
-
-class VideoReader:
-    """
-    Read video frames from a file using NVDEC hardware acceleration.
-    """
-    
-    def __init__(self, video_path: str):
-        """
-        Initialize NVDEC video reader.
-        
-        Args:
-            video_path: Path to the video file
-        """
-        self.video_path = Path(video_path)
-        if not self.video_path.exists():
-            raise FileNotFoundError(f"Video file not found: {video_path}")
-        
-        # Create demuxer for extracting encoded packets
-        self.demuxer = nvc.CreateDemuxer(str(self.video_path))
-        
-        # Create decoder with RGB output on GPU
-        self.decoder = nvc.CreateDecoder(
-            gpuid=0,
-            codec=self.demuxer.GetNvCodecId(),
-            usedevicememory=True,
-            outputColorType=nvc.OutputColorType.RGB  # Direct RGB output
-        )
-        
-        # Video properties
-        self.fps = self.demuxer.FrameRate()
-        self.frame_count = None  # PyNvVideoCodec doesn't provide frame count directly
-        self.width = self.demuxer.Width()
-        self.height = self.demuxer.Height()
-    
-    def read_frames(self) -> Iterator[torch.Tensor]:
-        """
-        Iterate over video frames.
-        
-        Yields:
-            Video frames as torch tensors (RGB format, H x W x 3, uint8, CUDA)
-        """
-        # Decode frames from demuxed packets
-        for packet in self.demuxer:
-            for frame in self.decoder.Decode(packet):
-                # Convert DecodedFrame to CUDA tensor using DLPack (zero-copy)
-                # Frame is already RGB format from decoder
-                frame_tensor = torch.from_dlpack(frame)
-                yield frame_tensor
-    
-    def __enter__(self):
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-    
-    def close(self):
-        """Release decoder and demuxer resources."""
-        # PyNvVideoCodec handles cleanup automatically
-        pass
 
 
 class VideoWriter:
@@ -74,7 +14,7 @@ class VideoWriter:
     def __init__(self, 
                  output_path: str,
                  fps: float,
-                 frame_size: Tuple[int, int]):
+                 frame_size: Tuple[int, int]) -> None:
         """
         Initialize NVENC video writer with HEVC encoding.
         
@@ -83,12 +23,13 @@ class VideoWriter:
             fps: Frames per second
             frame_size: Frame size (width, height)
         """
-        self.output_path = Path(output_path)
+        self.output_path: Path = Path(output_path)
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Assert and ensure frame_size types are correct
         assert len(frame_size) == 2, f"frame_size must be (width, height), got {frame_size}"
-        self.width, self.height = int(frame_size[0]), int(frame_size[1])
+        self.width: int = int(frame_size[0])
+        self.height: int = int(frame_size[1])
         assert isinstance(self.width, int) and isinstance(self.height, int), f"Width and height must be integers, got width={type(self.width)}, height={type(self.height)}"
         assert isinstance(fps, (int, float)), f"FPS must be numeric, got {type(fps)}"
         
@@ -107,9 +48,9 @@ class VideoWriter:
         
         # Open output file for writing bitstream
         self.output_file = open(self.output_path, 'wb')
-        self.frame_count = 0
+        self.frame_count: int = 0
     
-    def write_frame(self, frame: torch.Tensor):
+    def write_frame(self, frame: torch.Tensor) -> None:
         """
         Write a single frame.
         
@@ -121,10 +62,11 @@ class VideoWriter:
         assert frame.dtype == torch.uint8, f"Frame must be uint8, got {frame.dtype}"
         assert frame.ndim == 3 and frame.shape[2] == 3, f"Frame must be H x W x 3, got {frame.shape}"
         
-        height, width = frame.shape[0], frame.shape[1]
+        height: int = frame.shape[0]
+        width: int = frame.shape[1]
         
         # Create BGRA tensor with proper alignment
-        bgra = torch.empty((height, width, 4), dtype=torch.uint8, device='cuda')
+        bgra: torch.Tensor = torch.empty((height, width, 4), dtype=torch.uint8, device='cuda')
         
         # Copy RGB channels to BGRA format
         bgra[:, :, 0] = frame[:, :, 2]  # B <- R
@@ -147,13 +89,13 @@ class VideoWriter:
         # NVENC may buffer initial frames before outputting bitstream
         self.frame_count += 1
     
-    def __enter__(self):
+    def __enter__(self) -> 'VideoWriter':
         return self
     
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: Optional[type], exc_val: Optional[Exception], exc_tb: Optional[Any]) -> None:
         self.close()
     
-    def close(self):
+    def close(self) -> None:
         """Release NVENC encoder and close output file."""
         # Flush any remaining frames
         if hasattr(self, 'encoder'):

@@ -2,4 +2,6 @@
 
 from .face_mapper import FaceMapper
 
-__all__ = ["FaceMapper"]
+__all__ = [
+    "FaceMapper",
+]

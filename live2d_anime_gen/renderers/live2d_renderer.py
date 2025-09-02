@@ -5,11 +5,13 @@ import torch
 import numpy as np
 import pygame
 import live2d.v3 as live2d
+import OpenGL.GL as gl
 
 from ..core.types import Live2DParameters
+from ..core.base_renderer import BaseRenderer
 
 
-class Live2DRenderer:
+class Live2DRenderer(BaseRenderer):
     """
     Wrapper for Live2D v3 model rendering.
     """
@@ -26,12 +28,10 @@ class Live2DRenderer:
             canvas_size: Rendering canvas size (width, height)
             background_color: RGBA background color
         """
-        self.model_path = model_path
-        self.canvas_size = canvas_size
+        super().__init__(model_path, canvas_size)
         self.background_color = background_color
         
         self.model: Optional[live2d.LAppModel] = None
-        self.initialized = False
         
         # Parameter cache for optimization
         self._param_cache: Dict[str, float] = {}
@@ -120,25 +120,6 @@ class Live2DRenderer:
         
         return pixels
     
-    def render_to_surface(self, parameters: Live2DParameters) -> pygame.Surface:
-        """
-        Render Live2D model to pygame surface.
-        
-        Args:
-            parameters: Live2D parameters to apply
-            
-        Returns:
-            Rendered pygame surface
-        """
-        pixels = self._render_single(parameters)
-        
-        # Convert torch tensor to numpy for pygame compatibility
-        pixels_np = pixels.cpu().numpy()
-        
-        # Convert to pygame surface
-        surface = pygame.surfarray.make_surface(pixels_np.swapaxes(0, 1))
-        
-        return surface
     
     def _apply_parameters(self, parameters: Live2DParameters):
         """Apply parameters to Live2D model."""
@@ -159,7 +140,6 @@ class Live2DRenderer:
     
     def _read_pixels(self) -> torch.Tensor:
         """Read pixels from OpenGL framebuffer."""
-        import OpenGL.GL as gl
         
         width, height = self.canvas_size
         
@@ -182,45 +162,9 @@ class Live2DRenderer:
         
         return pixels_tensor
     
-    def set_expression(self, expression_name: str):
-        """
-        Set model expression.
-        
-        Args:
-            expression_name: Name of expression to apply
-        """
-        if self.model:
-            self.model.SetExpression(expression_name)
     
-    def set_random_expression(self):
-        """Set a random expression."""
-        if self.model:
-            self.model.SetRandomExpression()
-    
-    def start_motion(self, group: str = "Idle", priority: int = 2):
-        """
-        Start a motion.
-        
-        Args:
-            group: Motion group name
-            priority: Motion priority
-        """
-        if self.model:
-            self.model.StartMotion(group, priority)
-    
-    def start_random_motion(self, group: str = "Idle", priority: int = 2):
-        """
-        Start a random motion from group.
-        
-        Args:
-            group: Motion group name
-            priority: Motion priority
-        """
-        if self.model:
-            self.model.StartRandomMotion(group, priority)
-    
-    def cleanup(self):
-        """Clean up resources."""
+    def close(self):
+        """Close renderer and clean up resources."""
         if self.initialized:
             live2d.dispose()
             pygame.quit()
@@ -228,6 +172,15 @@ class Live2DRenderer:
             self.model = None
             self._param_cache.clear()
     
+    def __enter__(self):
+        """Context manager entry."""
+        self._initialize()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit with automatic cleanup."""
+        self.close()
+    
     def __del__(self):
         """Destructor to ensure cleanup."""
-        self.cleanup()
+        self.close()

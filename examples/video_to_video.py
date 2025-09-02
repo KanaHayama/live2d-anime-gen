@@ -32,15 +32,12 @@ from live2d_anime_gen import (
     ParameterSmoother,
     VideoReader,
     VideoWriter,
-    Pipeline,
-    DataCollector,
     InputType,
-    DataExporter,
     DataLoader,
     detect_input_type,
+    DataExporter,
     Live2DParameters
 )
-from live2d_anime_gen.processors.data_io import StreamingJSONWriter
 
 
 def parse_args() -> argparse.Namespace:
@@ -350,7 +347,7 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
             'width': video_metadata['width'],
             'height': video_metadata['height']
         }
-        landmarks_json_writer = StreamingJSONWriter(args.save_landmarks, landmarks_metadata)
+        landmarks_json_writer = DataExporter(args.save_landmarks, landmarks_metadata)
         landmarks_json_writer.__enter__()
         print(f"💾 Writing landmarks to: {args.save_landmarks}")
     
@@ -358,7 +355,7 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
         parameters_metadata = {
             'fps': video_metadata['fps']
         }
-        parameters_json_writer = StreamingJSONWriter(args.save_parameters, parameters_metadata)
+        parameters_json_writer = DataExporter(args.save_parameters, parameters_metadata)
         parameters_json_writer.__enter__()
         print(f"💾 Writing parameters to: {args.save_parameters}")
     
