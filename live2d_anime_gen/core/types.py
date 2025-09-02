@@ -1,7 +1,7 @@
 """Type definitions for Live2D parameters and data structures."""
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Union
 import torch
 
 
@@ -34,6 +34,31 @@ class Live2DParameters:
     
     # Additional custom parameters
     custom_params: Dict[str, torch.Tensor] = field(default_factory=dict)
+    
+    @classmethod
+    def create_default(cls, device: str = 'cuda') -> 'Live2DParameters':
+        """
+        Create Live2D parameters with neutral/default values.
+        
+        Args:
+            device: Device to create tensors on
+            
+        Returns:
+            Live2DParameters with neutral default values
+        """
+        return cls(
+            eye_l_open=torch.tensor(1.0, device=device),      # Eyes fully open
+            eye_r_open=torch.tensor(1.0, device=device),      # Eyes fully open
+            mouth_open_y=torch.tensor(0.0, device=device),    # Mouth closed
+            mouth_form=torch.tensor(0.0, device=device),      # Neutral mouth shape
+            angle_x=torch.tensor(0.0, device=device),         # No yaw rotation
+            angle_y=torch.tensor(0.0, device=device),         # No pitch rotation
+            angle_z=torch.tensor(0.0, device=device),         # No roll rotation
+            eye_ball_x=torch.tensor(0.0, device=device),      # Eyes looking forward
+            eye_ball_y=torch.tensor(0.0, device=device),      # Eyes looking forward
+            brow_l_y=torch.tensor(0.0, device=device),        # Neutral eyebrow
+            brow_r_y=torch.tensor(0.0, device=device),        # Neutral eyebrow
+        )
     
     def to_dict(self) -> Dict[str, float]:
         """

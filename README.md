@@ -20,32 +20,48 @@ A Python package for generating Live2D animations from multiple input sources. C
 ## Dependencies
 
 ### Core Package Dependencies
-- **torch** (pip): GPU tensor operations and future ML model inference
+The following are top-level dependencies that need to be manually installed.
+
+- **torch** (pip): GPU tensor operations
 - **insightface** (pip): 106-point facial landmark detection (CUDA only)
 - **onnxruntime-gpu** (pip): GPU-accelerated inference for InsightFace models
 - **ijson** (pip): Streaming JSON parser for memory-efficient data I/O
-
-### Example Dependencies (for Live2D rendering)
+- **PyNvVideoCodec** (pip): NVIDIA hardware-accelerated video encoding/decoding with NVENC
 - **live2d-py** (pip): Live2D v3 model runtime and rendering
 - **pygame** (pip): Window management for Live2D display
-- **PyOpenGL** (pip): OpenGL bindings required by live2d-py
+- **opencv-python** (pip): Video I/O and image processing
+
+### Example Dependencies
+Additional top-level dependencies required only for running the example scripts, beyond the core dependencies listed above.
+
+- None
 
 ## Quick Start
 
 ```python
-from live2d_anime_gen import InsightFaceDetector, FaceMapper, Live2DRenderer, VideoProcessor
+from live2d_anime_gen import InsightFaceDetector, FaceMapper, Live2DRenderer, ParameterSmoother, VideoReader, VideoWriter
 
 # Initialize components (CUDA required)
-detector = InsightFaceDetector()
-mapper = FaceMapper(smooth_factor=0.5)
-renderer = Live2DRenderer("path/to/model.model3.json")
+detector = InsightFaceDetector(det_size=(640, 640))
+mapper = FaceMapper(smooth_factor=0.7)
+smoother = ParameterSmoother(method="ema", alpha=0.7)
+renderer = Live2DRenderer("path/to/model.model3.json", canvas_size=(1280, 720))
 
-# Process video
-processor = VideoProcessor(detector, mapper, renderer)
-processor.process_video(
-    input_path="input.mp4",
-    output_path="output.mp4"
-)
+# Process video frame by frame
+reader = VideoReader("input.mp4")
+writer = VideoWriter("output.mp4", reader.fps, (1280, 720))
+
+for frame in reader.read_frames():
+    landmarks = detector.detect(frame)
+    if landmarks is not None:
+        parameters = mapper.map(landmarks, (frame.shape[0], frame.shape[1]))
+        if parameters is not None:
+            parameters = smoother.smooth(parameters)
+            rendered_frame = renderer.render(parameters)
+            writer.write_frame(rendered_frame)
+
+reader.close()
+writer.close()
 ```
 
 ## Project Structure
@@ -60,35 +76,3 @@ processor.process_video(
 │   └── renderers/         # Live2D rendering components
 └── examples/              # Example scripts and Live2D models
 ```
-
-## Troubleshooting
-
-### Common Issues
-
-1. **ONNX Runtime GPU Installation**
-   ```bash
-   # Uninstall CPU version first
-   pip uninstall onnxruntime
-   # Install GPU version
-   pip install onnxruntime-gpu
-   ```
-
-2. **Live2D Model Compatibility**
-   - Only Live2D v3 models (.model3.json) are supported
-   - Ensure all model files (textures, physics, etc.) are in the same directory
-
-3. **OpenGL Issues on Linux**
-   ```bash
-   sudo apt-get install freeglut3-dev
-   ```
-
-4. **InsightFace Model Download**
-   ```python
-   import insightface
-   app = insightface.app.FaceAnalysis()
-   app.prepare(ctx_id=0)  # This will download models automatically
-   ```
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.

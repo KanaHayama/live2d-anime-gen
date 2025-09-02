@@ -36,7 +36,7 @@ class Live2DRenderer:
         # Parameter cache for optimization
         self._param_cache: Dict[str, float] = {}
     
-    def initialize(self):
+    def _initialize(self):
         """Initialize pygame and Live2D framework."""
         if self.initialized:
             return
@@ -80,7 +80,7 @@ class Live2DRenderer:
         
         # Ensure renderer is initialized
         if not self.initialized:
-            self.initialize()
+            self._initialize()
         
         # Handle single parameters
         if isinstance(input_data, Live2DParameters):
@@ -163,6 +163,9 @@ class Live2DRenderer:
         
         width, height = self.canvas_size
         
+        # Ensure OpenGL rendering is complete before reading pixels
+        gl.glFinish()
+        
         # Read pixels from framebuffer
         pixels = gl.glReadPixels(
             0, 0, width, height,
@@ -177,10 +180,7 @@ class Live2DRenderer:
         # Flip vertically (OpenGL convention) - GPU accelerated
         pixels_tensor = torch.flip(pixels_tensor, dims=[0])
         
-        # Convert RGB to BGR using tensor operations - GPU accelerated  
-        pixels_bgr = pixels_tensor[:, :, [2, 1, 0]]  # Swap R and B channels
-        
-        return pixels_bgr
+        return pixels_tensor
     
     def set_expression(self, expression_name: str):
         """

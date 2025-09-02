@@ -1,11 +1,14 @@
 {
   "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "WebSearch",
+      "WebFetch(domain:docs.nvidia.com)",
+      "WebFetch(domain:pypi.org)"
+    ],
     "additionalDirectories": [
       "D:\\Project\\Other\\insightface",
       "D:\\Project\\Other\\live2d-py"
-    ],
-    "allow": [
-      "Bash(python:*)"
     ]
   }
 }

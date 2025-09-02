@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import torch
 from tqdm import tqdm
+import PyNvVideoCodec as nvc
 
 
 class VideoReader:
@@ -74,37 +75,41 @@ class VideoReader:
 
 class VideoWriter:
     """
-    Write frames to a video file.
+    Write frames to a video file using NVENC hardware acceleration.
     """
     
     def __init__(self, 
                  output_path: str,
                  fps: float,
-                 frame_size: Tuple[int, int],
-                 codec: str = 'mp4v'):
+                 frame_size: Tuple[int, int]):
         """
-        Initialize video writer.
+        Initialize NVENC video writer with HEVC encoding.
         
         Args:
             output_path: Path to output video file
             fps: Frames per second
             frame_size: Frame size (width, height)
-            codec: Video codec (default: mp4v)
         """
         self.output_path = Path(output_path)
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        fourcc = cv2.VideoWriter_fourcc(*codec)
-        self.writer = cv2.VideoWriter(
-            str(self.output_path),
-            fourcc,
-            fps,
-            frame_size
-        )
+        self.width, self.height = frame_size
         
-        if not self.writer.isOpened():
-            raise RuntimeError(f"Failed to create video writer: {output_path}")
+        # Create NVENC encoder with ARGB input format and HEVC codec
+        try:
+            self.encoder = nvc.CreateEncoder(
+                self.width,
+                self.height,
+                "ARGB",  # ARGB 8-bit input format
+                False,   # Use GPU memory (usecpuinputbuffer=False)
+                codec="hevc",  # Specify HEVC codec
+                fps=fps   # Set frame rate
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to create NVENC encoder: {e}")
         
+        # Open output file for writing bitstream
+        self.output_file = open(self.output_path, 'wb')
         self.frame_count = 0
     
     def write(self, input_data: Union[torch.Tensor, Iterator[torch.Tensor], List[torch.Tensor]], 
@@ -142,15 +147,37 @@ class VideoWriter:
         Write a single frame.
         
         Args:
-            frame: Frame to write (BGR format)
+            frame: Frame to write (RGB format, H x W x 3, uint8, on CUDA)
         """
-        # Convert torch tensor to numpy for OpenCV
-        frame_np = frame.cpu().numpy()
+        # Assert frame is on CUDA and has correct properties
+        assert frame.device.type == 'cuda', f"Frame must be on CUDA, got {frame.device}"
+        assert frame.dtype == torch.uint8, f"Frame must be uint8, got {frame.dtype}"
+        assert frame.ndim == 3 and frame.shape[2] == 3, f"Frame must be H x W x 3, got {frame.shape}"
         
-        if frame_np.dtype != np.uint8:
-            frame_np = (frame_np * 255).astype(np.uint8)
+        height, width = frame.shape[0], frame.shape[1]
         
-        self.writer.write(frame_np)
+        # Create BGRA tensor with proper alignment
+        bgra = torch.empty((height, width, 4), dtype=torch.uint8, device='cuda')
+        
+        # Copy RGB channels to BGRA format
+        bgra[:, :, 0] = frame[:, :, 2]  # B <- R
+        bgra[:, :, 1] = frame[:, :, 1]  # G <- G  
+        bgra[:, :, 2] = frame[:, :, 0]  # R <- B
+        bgra[:, :, 3] = 255             # A = 255
+        
+        # Synchronize CUDA operations to ensure all tensor operations are complete
+        # before passing to NVENC encoder to prevent race conditions
+        torch.cuda.synchronize()
+        
+        # Encode frame
+        bitstream = self.encoder.Encode(bgra)
+        
+        # Write bitstream to file
+        if bitstream:
+            self.output_file.write(bitstream)
+        
+        # Always increment frame count regardless of bitstream availability
+        # NVENC may buffer initial frames before outputting bitstream
         self.frame_count += 1
     
     def _write_stream(self, frames: Iterator[torch.Tensor], show_progress: bool) -> Iterator[torch.Tensor]:
@@ -220,6 +247,17 @@ class VideoWriter:
         self.close()
     
     def close(self):
-        """Release video writer."""
-        if self.writer:
-            self.writer.release()
+        """Release NVENC encoder and close output file."""
+        # Flush any remaining frames
+        if hasattr(self, 'encoder'):
+            remaining_bitstream = self.encoder.EndEncode()
+            if remaining_bitstream:
+                self.output_file.write(remaining_bitstream)
+        
+        # Close output file
+        if hasattr(self, 'output_file'):
+            self.output_file.close()
+        
+        # Clean up encoder
+        if hasattr(self, 'encoder'):
+            del self.encoder

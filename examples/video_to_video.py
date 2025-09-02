@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional, Iterator, Tuple, Union
 import torch
 import numpy as np
+import cv2
 from tqdm import tqdm
 
 # Import our package
@@ -192,8 +193,6 @@ def main() -> None:
 
 def create_landmark_frame(landmarks: Optional[torch.Tensor], canvas_size: Tuple[int, int]) -> torch.Tensor:
     """Create a single landmark visualization frame."""
-    import numpy as np
-    import cv2
     
     height, width = canvas_size[1], canvas_size[0]
     frame = np.zeros((height, width, 3), dtype=np.uint8)
@@ -264,7 +263,7 @@ def create_landmark_frame(landmarks: Optional[torch.Tensor], canvas_size: Tuple[
                     
                 cv2.putText(frame, text, (text_x, text_y), font, font_scale, text_color, font_thickness)
     
-    return torch.from_numpy(frame)
+    return torch.from_numpy(frame).cuda()
 
 
 def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progress: bool) -> None:
@@ -286,7 +285,6 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
             model_path=str(model_path),
             canvas_size=(args.resolution[0], args.resolution[1])
         )
-        renderer.initialize()
         print("✓ Initialized Live2D renderer")
     
     # Get input metadata and create data stream
@@ -369,6 +367,9 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
     total_frames = video_metadata['frame_count']
     progress_bar = tqdm(total=total_frames, desc="Processing frames", unit="frames") if show_progress else None
     
+    # Initialize with default parameters to maintain consistent frame count
+    last_valid_parameters = Live2DParameters.create_default()
+    
     try:
         for data_item, image_shape in input_stream():
             if input_type == InputType.PARAMETERS:
@@ -395,6 +396,7 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
                     parameters = mapper.map(landmarks, image_shape)
                     if parameters is not None:
                         parameters = smoother.smooth(parameters)
+                        last_valid_parameters = parameters
             
             # Write parameters to JSON
             if parameters_json_writer:
@@ -410,13 +412,15 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
                 else:
                     parameters_json_writer.write_item(None)
             
-            # Render Live2D output
-            if output_writer and parameters is not None:
-                rendered_frame = renderer.render(parameters)
+            # Render Live2D output (always render to maintain frame count)
+            if output_writer:
+                # Use current parameters if available, otherwise use last valid parameters
+                render_params = parameters if parameters is not None else last_valid_parameters
+                rendered_frame = renderer.render(render_params)
                 output_writer.write_frame(rendered_frame)
             
-            # Render landmark visualization
-            if landmark_writer and landmarks is not None:
+            # Render landmark visualization (always render to maintain frame count)
+            if landmark_writer:
                 landmark_frame = create_landmark_frame(landmarks, landmark_resolution)
                 landmark_writer.write_frame(landmark_frame)
             
@@ -441,11 +445,6 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
             progress_bar.close()
     
     print(f"✓ Processing complete: {frame_count} frames processed")
-
-
-
-
-
 
 if __name__ == "__main__":
     main()
