@@ -31,22 +31,20 @@ class InsightFaceDetector(BaseDetector):
         providers = ['CUDAExecutionProvider']
         self.app = FaceAnalysis(providers=providers, allowed_modules=['detection', 'landmark_2d_106'])
         self.app.prepare(ctx_id=0, det_size=det_size, det_thresh=det_thresh)
-        
-        self._num_landmarks = 106
     
-    def detect(self, input_data: Union[np.ndarray, Iterator[np.ndarray], List[np.ndarray]]) -> Union[Optional[torch.Tensor], Iterator[Optional[torch.Tensor]], List[Optional[torch.Tensor]]]:
+    def detect(self, input_data: Union[torch.Tensor, Iterator[torch.Tensor], List[torch.Tensor]]) -> Union[Optional[torch.Tensor], Iterator[Optional[torch.Tensor]], List[Optional[torch.Tensor]]]:
         """
         Unified detection interface supporting single frame, batch, and streaming modes.
         
         Args:
-            input_data: Input image(s) - single array, list, or iterator
+            input_data: Input image(s) - single tensor, list, or iterator (RGB format, H x W x 3, uint8, CUDA)
             
         Returns:
             - Single frame: Optional[torch.Tensor]
             - Multiple frames: Iterator or List of Optional[torch.Tensor]
         """
         # Handle single frame
-        if isinstance(input_data, np.ndarray):
+        if isinstance(input_data, torch.Tensor):
             return self._detect_single(input_data)
         
         # Handle iterator/generator (streaming mode)
@@ -57,18 +55,27 @@ class InsightFaceDetector(BaseDetector):
         else:
             return [self._detect_single(image) for image in input_data]
     
-    def _detect_single(self, image: np.ndarray) -> Optional[torch.Tensor]:
+    def _detect_single(self, image: torch.Tensor) -> Optional[torch.Tensor]:
         """
         Detect 106 facial landmarks in a single image.
         
         Args:
-            image: Input image as numpy array (H, W, C) in BGR format
+            image: Input image as torch tensor (RGB format, H x W x 3, uint8, CUDA)
             
         Returns:
             106 landmarks as torch tensor (106, 2) on GPU, or None if no face detected
         """
+        # Convert RGB to BGR on GPU for InsightFace
+        image_bgr = torch.empty_like(image)
+        image_bgr[..., 0] = image[..., 2]  # B = R
+        image_bgr[..., 1] = image[..., 1]  # G = G
+        image_bgr[..., 2] = image[..., 0]  # R = B
+        
+        # Convert to numpy for InsightFace API
+        image_np = image_bgr.cpu().numpy()
+        
         # Detect faces
-        faces = self.app.get(image)
+        faces = self.app.get(image_np)
         
         if not faces:
             return None
@@ -96,40 +103,7 @@ class InsightFaceDetector(BaseDetector):
             print(f"Warning: Expected 106 landmarks, got {landmarks.shape[0]}")
             return None
         
-        # Convert to torch tensor and move to GPU, normalize to [0,1]
-        return self.postprocess_landmarks(landmarks, image.shape)
+        # Convert numpy landmarks to torch tensor on CUDA, then postprocess
+        landmarks_tensor = torch.from_numpy(landmarks).cuda()
+        return self.postprocess_landmarks(landmarks_tensor, image_np.shape)
     
-    def get_num_landmarks(self) -> int:
-        """Return the number of landmarks (106)."""
-        return self._num_landmarks
-    
-    def detect_multiple_faces(self, image: np.ndarray, max_faces: int = 1) -> List[Optional[torch.Tensor]]:
-        """
-        Detect landmarks for multiple faces in a single image.
-        
-        Args:
-            image: Input image as numpy array (H, W, C) in BGR format
-            max_faces: Maximum number of faces to detect
-            
-        Returns:
-            List of landmark tensors, one per detected face
-        """
-        faces = self.app.get(image, max_num=max_faces)
-        
-        if not faces:
-            return []
-        
-        results = []
-        for face in faces:
-            # Extract 106 landmarks for each face
-            if hasattr(face, 'landmark_2d_106'):
-                landmarks = face.landmark_2d_106
-            elif hasattr(face, 'kps') and len(face.kps) == 106:
-                landmarks = face.kps
-            else:
-                continue
-            
-            if landmarks.shape[0] == 106:
-                results.append(self.postprocess_landmarks(landmarks, image.shape))
-        
-        return results

@@ -1,22 +1,19 @@
 """Video I/O utilities for reading and writing video files."""
 
-from typing import Iterator, Tuple, Optional, Union, List
+from typing import Iterator, Tuple
 from pathlib import Path
-import cv2
-import numpy as np
 import torch
-from tqdm import tqdm
 import PyNvVideoCodec as nvc
 
 
 class VideoReader:
     """
-    Read video frames from a file.
+    Read video frames from a file using NVDEC hardware acceleration.
     """
     
     def __init__(self, video_path: str):
         """
-        Initialize video reader.
+        Initialize NVDEC video reader.
         
         Args:
             video_path: Path to the video file
@@ -25,41 +22,37 @@ class VideoReader:
         if not self.video_path.exists():
             raise FileNotFoundError(f"Video file not found: {video_path}")
         
-        self.cap = cv2.VideoCapture(str(self.video_path))
-        if not self.cap.isOpened():
-            raise RuntimeError(f"Failed to open video: {video_path}")
+        # Create demuxer for extracting encoded packets
+        self.demuxer = nvc.CreateDemuxer(str(self.video_path))
+        
+        # Create decoder with RGB output on GPU
+        self.decoder = nvc.CreateDecoder(
+            gpuid=0,
+            codec=self.demuxer.GetNvCodecId(),
+            usedevicememory=True,
+            outputColorType=nvc.OutputColorType.RGB  # Direct RGB output
+        )
         
         # Video properties
-        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
-        self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.fps = self.demuxer.FrameRate()
+        self.frame_count = None  # PyNvVideoCodec doesn't provide frame count directly
+        self.width = self.demuxer.Width()
+        self.height = self.demuxer.Height()
     
-    def read_frames(self, show_progress: bool = True) -> Iterator[np.ndarray]:
+    def read_frames(self) -> Iterator[torch.Tensor]:
         """
         Iterate over video frames.
         
-        Args:
-            show_progress: Show progress bar
-            
         Yields:
-            Video frames as numpy arrays (BGR format)
+            Video frames as torch tensors (RGB format, H x W x 3, uint8, CUDA)
         """
-        progress_bar = tqdm(total=self.frame_count, desc="Reading frames") if show_progress else None
-        
-        try:
-            while self.cap.isOpened():
-                ret, frame = self.cap.read()
-                if not ret:
-                    break
-                    
-                yield frame
-                
-                if progress_bar:
-                    progress_bar.update(1)
-        finally:
-            if progress_bar:
-                progress_bar.close()
+        # Decode frames from demuxed packets
+        for packet in self.demuxer:
+            for frame in self.decoder.Decode(packet):
+                # Convert DecodedFrame to CUDA tensor using DLPack (zero-copy)
+                # Frame is already RGB format from decoder
+                frame_tensor = torch.from_dlpack(frame)
+                yield frame_tensor
     
     def __enter__(self):
         return self
@@ -68,9 +61,9 @@ class VideoReader:
         self.close()
     
     def close(self):
-        """Release video capture."""
-        if self.cap:
-            self.cap.release()
+        """Release decoder and demuxer resources."""
+        # PyNvVideoCodec handles cleanup automatically
+        pass
 
 
 class VideoWriter:
@@ -93,15 +86,19 @@ class VideoWriter:
         self.output_path = Path(output_path)
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        self.width, self.height = frame_size
+        # Assert and ensure frame_size types are correct
+        assert len(frame_size) == 2, f"frame_size must be (width, height), got {frame_size}"
+        self.width, self.height = int(frame_size[0]), int(frame_size[1])
+        assert isinstance(self.width, int) and isinstance(self.height, int), f"Width and height must be integers, got width={type(self.width)}, height={type(self.height)}"
+        assert isinstance(fps, (int, float)), f"FPS must be numeric, got {type(fps)}"
         
         # Create NVENC encoder with ARGB input format and HEVC codec
         try:
             self.encoder = nvc.CreateEncoder(
-                self.width,
-                self.height,
-                "ARGB",  # ARGB 8-bit input format
-                False,   # Use GPU memory (usecpuinputbuffer=False)
+                width=self.width,
+                height=self.height,
+                fmt="ARGB",  # ARGB 8-bit input format
+                usecpuinputbuffer=False,   # Use GPU memory
                 codec="hevc",  # Specify HEVC codec
                 fps=fps   # Set frame rate
             )
@@ -111,36 +108,6 @@ class VideoWriter:
         # Open output file for writing bitstream
         self.output_file = open(self.output_path, 'wb')
         self.frame_count = 0
-    
-    def write(self, input_data: Union[torch.Tensor, Iterator[torch.Tensor], List[torch.Tensor]], 
-             show_progress: bool = True) -> Optional[Iterator[torch.Tensor]]:
-        """
-        Unified write interface supporting single frame, batch, and streaming modes.
-        
-        Args:
-            input_data: Input frames - single array, list, or iterator
-            show_progress: Show progress bar for batch/streaming modes
-            
-        Returns:
-            - Single frame: None
-            - Iterator input: Iterator (passthrough for chaining)
-            - List input: None
-        """
-        from .stream_utils import is_iterator
-        
-        # Handle single frame
-        if isinstance(input_data, torch.Tensor):
-            self.write_frame(input_data)
-            return None
-        
-        # Handle iterator/generator (streaming mode)
-        elif is_iterator(input_data):
-            return self._write_stream(input_data, show_progress)
-        
-        # Handle list (batch mode)
-        else:
-            self._write_batch(input_data, show_progress)
-            return None
     
     def write_frame(self, frame: torch.Tensor):
         """
@@ -179,66 +146,6 @@ class VideoWriter:
         # Always increment frame count regardless of bitstream availability
         # NVENC may buffer initial frames before outputting bitstream
         self.frame_count += 1
-    
-    def _write_stream(self, frames: Iterator[torch.Tensor], show_progress: bool) -> Iterator[torch.Tensor]:
-        """
-        Write frames from iterator with passthrough.
-        
-        Args:
-            frames: Iterator of video frames
-            show_progress: Show progress bar
-            
-        Yields:
-            Same frames (passthrough for chaining)
-        """
-        progress_bar = tqdm(desc="Writing frames", unit="frames") if show_progress else None
-        
-        try:
-            for frame in frames:
-                self.write_frame(frame)
-                
-                if progress_bar is not None:
-                    progress_bar.update(1)
-                
-                yield frame
-        finally:
-            if progress_bar is not None:
-                progress_bar.close()
-    
-    def _write_batch(self, frames: List[torch.Tensor], show_progress: bool):
-        """
-        Write frames from list.
-        
-        Args:
-            frames: List of video frames
-            show_progress: Show progress bar
-        """
-        progress_bar = tqdm(total=len(frames), desc="Writing frames") if show_progress else None
-        
-        try:
-            for frame in frames:
-                self.write_frame(frame)
-                
-                if progress_bar:
-                    progress_bar.update(1)
-        finally:
-            if progress_bar:
-                progress_bar.close()
-    
-    # Legacy method for backward compatibility
-    def write_frames(self, 
-                    frames: Iterator[torch.Tensor],
-                    total: Optional[int] = None,
-                    show_progress: bool = True):
-        """
-        Legacy method: Write multiple frames.
-        
-        Args:
-            frames: Iterator of frames
-            total: Total number of frames (for progress bar)
-            show_progress: Show progress bar
-        """
-        list(self._write_stream(frames, show_progress))
     
     def __enter__(self):
         return self

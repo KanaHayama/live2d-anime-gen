@@ -296,115 +296,64 @@ class DataLoader:
     
     @staticmethod
     def load_landmarks(input_path: str, 
-                      device: str = 'cuda',
-                      streaming: bool = False) -> Union[Tuple[List[Optional[torch.Tensor]], Optional[dict]], Tuple[Iterator[Optional[torch.Tensor]], Optional[dict]]]:
+                      device: str = 'cuda') -> Tuple[Iterator[Optional[torch.Tensor]], dict]:
         """
-        Load landmarks sequence from file.
+        Load landmarks sequence from JSON file using streaming.
         
         Args:
-            input_path: Input file path
+            input_path: Input JSON file path
             device: Device to load tensors to
-            streaming: If True, return iterator instead of list
             
         Returns:
-            Tuple of (landmarks list/iterator, metadata dict with video dimensions and fps or None)
+            Tuple of (landmarks iterator, metadata dict with video dimensions and fps)
         """
         input_path = Path(input_path)
         
-        if input_path.suffix == '.json':
-            if streaming:
-                # Return streaming iterator using ijson
-                def landmarks_iterator():
-                    with StreamingJSONReader(input_path) as reader:
-                        for frame_landmarks in reader.read_items():
-                            if frame_landmarks is not None:
-                                # Convert list to tensor
-                                tensor = torch.tensor(frame_landmarks, dtype=torch.float32, device=device)
-                                yield tensor
-                            else:
-                                yield None
-                
-                # Get metadata separately using ijson
-                with StreamingJSONReader(input_path) as reader:
-                    data = reader.get_metadata()
-                
-                metadata = {
-                    'width': data['width'],
-                    'height': data['height'],
-                    'fps': data['fps'],
-                    'frame_count': data['frame_count']
-                }
-                
-                return landmarks_iterator(), metadata if metadata else None
-            else:
-                # Original batch loading
-                with open(input_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                
-                landmarks = []
-                for frame_landmarks in data['landmarks']:
-                    if frame_landmarks is not None:
-                        # Convert list to tensor
-                        tensor = torch.tensor(frame_landmarks, dtype=torch.float32, device=device)
-                        landmarks.append(tensor)
-                    else:
-                        landmarks.append(None)
-                
-                # Extract metadata
-                metadata = {
-                    'width': data['width'],
-                    'height': data['height'],
-                    'fps': data['fps'],
-                    'frame_count': data['frame_count']
-                }
-                
-                return landmarks, metadata if metadata else None
+        # Get metadata separately using ijson
+        with StreamingJSONReader(input_path) as reader:
+            data = reader.get_metadata()
         
-        else:
-            raise ValueError(f"Unsupported file format: {input_path.suffix}. Only JSON format is supported.")
+        metadata = {
+            'width': int(data['width']),
+            'height': int(data['height']),
+            'fps': float(data['fps']),
+            'frame_count': int(data['frame_count']) if data['frame_count'] is not None else None
+        }
+        
+        return DataLoader._create_landmarks_iterator(input_path, device), metadata
+    
+    @staticmethod
+    def _create_landmarks_iterator(input_path: Path, device: str) -> Iterator[Optional[torch.Tensor]]:
+        """Create streaming iterator for landmarks."""
+        with StreamingJSONReader(input_path) as reader:
+            for frame_landmarks in reader.read_items():
+                if frame_landmarks is not None:
+                    # Convert list to tensor
+                    tensor = torch.tensor(frame_landmarks, dtype=torch.float32, device=device)
+                    yield tensor
+                else:
+                    yield None
     
     @staticmethod
     def load_parameters(input_path: str,
-                       device: str = 'cuda',
-                       streaming: bool = False) -> Union[List[Optional[Live2DParameters]], Iterator[Optional[Live2DParameters]]]:
+                       device: str = 'cuda') -> Iterator[Optional[Live2DParameters]]:
         """
-        Load Live2D parameters sequence from JSON file.
+        Load Live2D parameters sequence from JSON file using streaming.
         
         Args:
-            input_path: Input file path
+            input_path: Input JSON file path
             device: Device to load tensors to
-            streaming: If True, return iterator instead of list
             
         Returns:
-            List or iterator of Live2D parameters
+            Iterator of Live2D parameters
         """
-        if streaming:
-            # Return streaming iterator using ijson
-            def parameters_iterator():
-                with StreamingJSONReader(input_path) as reader:
-                    for frame_params in reader.read_items():
-                        if frame_params is not None:
-                            # Convert dict to Live2DParameters
-                            param_dict = {}
-                            for key, value in frame_params.items():
-                                if key == 'custom_params':
-                                    param_dict[key] = value  # Keep as dict
-                                elif value is not None:
-                                    param_dict[key] = torch.tensor(value, dtype=torch.float32, device=device)
-                                else:
-                                    param_dict[key] = None
-                            yield Live2DParameters(**param_dict)
-                        else:
-                            yield None
-            
-            return parameters_iterator()
-        else:
-            # Original batch loading
-            with open(input_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            parameters = []
-            for frame_params in data['parameters']:
+        return DataLoader._create_parameters_iterator(input_path, device)
+    
+    @staticmethod
+    def _create_parameters_iterator(input_path: str, device: str) -> Iterator[Optional[Live2DParameters]]:
+        """Create streaming iterator for Live2D parameters."""
+        with StreamingJSONReader(input_path) as reader:
+            for frame_params in reader.read_items():
                 if frame_params is not None:
                     # Convert dict to Live2DParameters
                     param_dict = {}
@@ -415,11 +364,9 @@ class DataLoader:
                             param_dict[key] = torch.tensor(value, dtype=torch.float32, device=device)
                         else:
                             param_dict[key] = None
-                    parameters.append(Live2DParameters(**param_dict))
+                    yield Live2DParameters(**param_dict)
                 else:
-                    parameters.append(None)
-            
-            return parameters
+                    yield None
     
     @staticmethod
     def get_metadata_from_parameters(input_path: str) -> dict:

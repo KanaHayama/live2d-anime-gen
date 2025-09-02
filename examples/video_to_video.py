@@ -299,14 +299,14 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
         }
         
         def input_stream() -> Iterator[Tuple[Optional[torch.Tensor], Optional[Tuple[int, int]]]]:
-            for frame in reader.read_frames(show_progress=False):
+            for frame in reader.read_frames():
                 # Detection
                 landmarks = detector.detect(frame)
                 yield landmarks, (frame.shape[0], frame.shape[1])  # (landmarks, image_shape)
                 
     elif input_type == InputType.LANDMARKS:
         # Landmarks input - create landmarks stream
-        landmarks_iterator, video_metadata = DataLoader.load_landmarks(args.input, streaming=True)
+        landmarks_iterator, video_metadata = DataLoader.load_landmarks(args.input)
         
         def input_stream() -> Iterator[Tuple[Optional[torch.Tensor], Optional[Tuple[int, int]]]]:
             for landmarks in landmarks_iterator:
@@ -315,7 +315,7 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
                 
     elif input_type == InputType.PARAMETERS:
         # Parameters input - create parameters stream (skip mapping)
-        parameters_iterator = DataLoader.load_parameters(args.input, streaming=True)
+        parameters_iterator = DataLoader.load_parameters(args.input)
         video_metadata = DataLoader.get_metadata_from_parameters(args.input)
         # Parameters don't have video dimensions, use default resolution
         video_metadata['width'] = args.resolution[0]
@@ -365,7 +365,15 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
     # Process frames in streaming mode
     frame_count = 0
     total_frames = video_metadata['frame_count']
-    progress_bar = tqdm(total=total_frames, desc="Processing frames", unit="frames") if show_progress else None
+    # Create progress bar - shows processing speed even without total
+    if show_progress:
+        if total_frames is not None:
+            progress_bar = tqdm(total=total_frames, desc="Processing frames", unit="frames")
+        else:
+            # Create tqdm without total - will show count and processing speed
+            progress_bar = tqdm(desc="Processing", unit=" frames")
+    else:
+        progress_bar = None
     
     # Initialize with default parameters to maintain consistent frame count
     last_valid_parameters = Live2DParameters.create_default()
@@ -425,7 +433,7 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
                 landmark_writer.write_frame(landmark_frame)
             
             frame_count += 1
-            if progress_bar:
+            if progress_bar is not None:
                 progress_bar.update(1)
                 
     finally:
@@ -441,7 +449,7 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
         if parameters_json_writer:
             parameters_json_writer.__exit__(None, None, None)
             print("✓ Parameters saved")
-        if progress_bar:
+        if progress_bar is not None:
             progress_bar.close()
     
     print(f"✓ Processing complete: {frame_count} frames processed")
