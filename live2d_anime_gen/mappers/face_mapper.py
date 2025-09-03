@@ -22,7 +22,7 @@ class FaceMapper(BaseLandmarkMapper):
     to ensure optimal animation quality for the haru model.
     """
     
-    def __init__(self, smooth_factor: float = 0.5):
+    def __init__(self, smooth_factor: float):
         """
         Initialize the face mapper.
         

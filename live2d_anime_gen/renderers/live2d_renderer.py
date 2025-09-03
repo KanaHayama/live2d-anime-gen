@@ -19,7 +19,8 @@ class Live2DRenderer(BaseRenderer):
     def __init__(self, 
                  model_path: str,
                  canvas_size: Tuple[int, int] = (512, 512),
-                 background_color: Tuple[int, int, int, int] = (0, 0, 0, 0)):
+                 background_color: Tuple[int, int, int, int] = (0, 0, 0, 0),
+                 show: bool = False):
         """
         Initialize Live2D renderer.
         
@@ -27,28 +28,29 @@ class Live2DRenderer(BaseRenderer):
             model_path: Path to .model3.json file
             canvas_size: Rendering canvas size (width, height)
             background_color: RGBA background color
+            show: Whether to show pygame window (default: False for headless mode)
         """
-        super().__init__(model_path, canvas_size)
+        self.model_path = model_path
+        self.canvas_size = canvas_size
         self.background_color = background_color
-        
-        self.model: Optional[live2d.LAppModel] = None
+        self.show = show
         
         # Parameter cache for optimization
         self._param_cache: Dict[str, float] = {}
-    
-    def _initialize(self):
-        """Initialize pygame and Live2D framework."""
-        if self.initialized:
-            return
         
         # Initialize pygame
         pygame.init()
         
         # Create OpenGL context
-        pygame.display.set_mode(
-            self.canvas_size,
-            pygame.DOUBLEBUF | pygame.OPENGL | pygame.HIDDEN
-        )
+        display_flags = pygame.DOUBLEBUF | pygame.OPENGL
+        if not show:
+            display_flags |= pygame.HIDDEN
+            
+        pygame.display.set_mode(self.canvas_size, display_flags)
+        
+        # Set window title if showing
+        if show:
+            pygame.display.set_caption("Live2D Renderer")
         
         # Initialize Live2D
         live2d.init()
@@ -62,8 +64,7 @@ class Live2DRenderer(BaseRenderer):
         # Disable auto features (we control everything)
         self.model.SetAutoBlinkEnable(False)
         self.model.SetAutoBreathEnable(False)
-        
-        self.initialized = True
+    
     
     def render(self, input_data: Union[Live2DParameters, Iterator[Optional[Live2DParameters]], List[Optional[Live2DParameters]]]) -> Union[torch.Tensor, Iterator[Optional[torch.Tensor]], List[Optional[torch.Tensor]]]:
         """
@@ -77,10 +78,6 @@ class Live2DRenderer(BaseRenderer):
             - Multiple inputs: Iterator or List of Optional[torch.Tensor]
         """
         from ..processors.stream_utils import is_iterator, apply_to_stream
-        
-        # Ensure renderer is initialized
-        if not self.initialized:
-            self._initialize()
         
         # Handle single parameters
         if isinstance(input_data, Live2DParameters):
@@ -117,6 +114,11 @@ class Live2DRenderer(BaseRenderer):
         
         # Read pixels from OpenGL buffer
         pixels = self._read_pixels()
+        
+        # Handle pygame events if window is visible to keep it responsive
+        if self.show:
+            pygame.event.pump()
+            pygame.display.flip()
         
         return pixels
     
@@ -165,16 +167,13 @@ class Live2DRenderer(BaseRenderer):
     
     def close(self):
         """Close renderer and clean up resources."""
-        if self.initialized:
-            live2d.dispose()
-            pygame.quit()
-            self.initialized = False
-            self.model = None
-            self._param_cache.clear()
+        live2d.dispose()
+        pygame.quit()
+        self.model = None
+        self._param_cache.clear()
     
     def __enter__(self):
         """Context manager entry."""
-        self._initialize()
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):

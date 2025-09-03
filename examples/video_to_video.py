@@ -81,7 +81,7 @@ Examples:
     parser.add_argument(
         "--output", "-o",
         type=str,
-        help="Output video file path"
+        help="Output Live2D rendered video file path"
     )
     
     # Model configuration
@@ -96,7 +96,7 @@ Examples:
     parser.add_argument(
         "--smoothing", "-s",
         type=float,
-        default=0.7,
+        default=0.5,
         help="Parameter smoothing factor (0.0-1.0)"
     )
     
@@ -136,12 +136,12 @@ Examples:
     
     # Output configuration
     parser.add_argument(
-        "--resolution",
+        "--render-resolution",
         type=int,
         nargs=2,
         default=[1280, 720],
         metavar=("WIDTH", "HEIGHT"),
-        help="Output video resolution"
+        help="Live2D render resolution"
     )
     
     parser.add_argument(
@@ -150,6 +150,11 @@ Examples:
         help="Save landmark visualization video"
     )
     
+    parser.add_argument(
+        "--show-rendering-window",
+        action="store_true",
+        help="Show Live2D rendering window during processing"
+    )
     
     return parser.parse_args()
 
@@ -170,7 +175,7 @@ def main() -> None:
     
     # Detect input type
     input_type = detect_input_type(args.input)
-    print(f"🔍 Detected input type: {input_type}")
+    print(f"Detected input type: {input_type}")
     
     show_progress = not args.no_progress
     
@@ -179,13 +184,13 @@ def main() -> None:
         process_pipeline(args, input_type, show_progress)
             
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         if args.debug:
             import traceback
             traceback.print_exc()
         sys.exit(1)
     
-    print("🎉 Pipeline completed successfully!")
+    print("Pipeline completed successfully!")
 
 
 def create_landmark_frame(landmarks: Optional[torch.Tensor], canvas_size: Tuple[int, int]) -> torch.Tensor:
@@ -269,7 +274,7 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
     detector = InsightFaceDetector(det_size=tuple(args.det_size))
     mapper = FaceMapper(smooth_factor=args.smoothing)
     smoother = ParameterSmoother(method="ema", alpha=args.smoothing)
-    print("✓ Initialized detector, mapper, and smoother")
+    print("Initialized detector, mapper, and smoother")
     
     # Initialize renderer if output specified
     renderer: Optional[Live2DRenderer] = None
@@ -280,9 +285,10 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
         
         renderer = Live2DRenderer(
             model_path=str(model_path),
-            canvas_size=(args.resolution[0], args.resolution[1])
+            canvas_size=(args.render_resolution[0], args.render_resolution[1]),
+            show=args.show_rendering_window
         )
-        print("✓ Initialized Live2D renderer")
+        print("Initialized Live2D renderer")
     
     # Get input metadata and create data stream
     if input_type == InputType.VIDEO:
@@ -315,8 +321,8 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
         parameters_iterator = DataLoader.load_parameters(args.input)
         video_metadata = DataLoader.get_metadata_from_parameters(args.input)
         # Parameters don't have video dimensions, use default resolution
-        video_metadata['width'] = args.resolution[0]
-        video_metadata['height'] = args.resolution[1]
+        video_metadata['width'] = args.render_resolution[0]
+        video_metadata['height'] = args.render_resolution[1]
         
         def input_stream() -> Iterator[Tuple[Union[Optional[torch.Tensor], Optional[Live2DParameters]], Optional[Tuple[int, int]]]]:
             for parameters in parameters_iterator:
@@ -324,14 +330,14 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
     else:
         raise ValueError(f"Unsupported input type: {input_type}")
     
-    print(f"🔄 Starting processing pipeline...")
+    print(f"Starting processing pipeline...")
     if input_type == InputType.VIDEO:
         print(f"  Video: {video_metadata['width']}x{video_metadata['height']}, {video_metadata['fps']} fps, {video_metadata['frame_count']} frames")
     else:
         print(f"  Input: {video_metadata['width']}x{video_metadata['height']}, {video_metadata['fps']} fps, {video_metadata['frame_count']} frames")
     
     # Create all output writers
-    output_writer = VideoWriter(args.output, video_metadata['fps'], args.resolution) if args.output else None
+    output_writer = VideoWriter(args.output, video_metadata['fps'], args.render_resolution) if args.output else None
     
     # For landmark video, use original video dimensions
     landmark_resolution = (video_metadata['width'], video_metadata['height'])
@@ -349,7 +355,7 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
         }
         landmarks_json_writer = DataExporter(args.save_landmarks, landmarks_metadata)
         landmarks_json_writer.__enter__()
-        print(f"💾 Writing landmarks to: {args.save_landmarks}")
+        print(f"Writing landmarks to: {args.save_landmarks}")
     
     if args.save_parameters:
         parameters_metadata = {
@@ -357,7 +363,7 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
         }
         parameters_json_writer = DataExporter(args.save_parameters, parameters_metadata)
         parameters_json_writer.__enter__()
-        print(f"💾 Writing parameters to: {args.save_parameters}")
+        print(f"Writing parameters to: {args.save_parameters}")
     
     # Process frames in streaming mode
     frame_count = 0
@@ -442,14 +448,14 @@ def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progr
             landmark_writer.close()
         if landmarks_json_writer:
             landmarks_json_writer.__exit__(None, None, None)
-            print("✓ Landmarks saved")
+            print("Landmarks saved")
         if parameters_json_writer:
             parameters_json_writer.__exit__(None, None, None)
-            print("✓ Parameters saved")
+            print("Parameters saved")
         if progress_bar is not None:
             progress_bar.close()
     
-    print(f"✓ Processing complete: {frame_count} frames processed")
+    print(f"Processing complete: {frame_count} frames processed")
 
 if __name__ == "__main__":
     main()

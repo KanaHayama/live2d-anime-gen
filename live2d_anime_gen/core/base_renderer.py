@@ -15,19 +15,9 @@ class BaseRenderer(ABC):
     tensors in the standardized format: (H, W, 3) RGB uint8 on CUDA device.
     """
     
-    def __init__(self, 
-                 model_path: str,
-                 canvas_size: Tuple[int, int] = (512, 512)):
-        """
-        Initialize base renderer.
-        
-        Args:
-            model_path: Path to .model3.json file
-            canvas_size: Rendering canvas size (width, height)
-        """
-        self.model_path = model_path
-        self.canvas_size = canvas_size
-        self.initialized = False
+    def __init__(self):
+        """Initialize base renderer."""
+        pass
     
     @abstractmethod
     def render(self, input_data: Union[Live2DParameters, Iterator[Live2DParameters], List[Live2DParameters]]) -> Union[torch.Tensor, Iterator[torch.Tensor], List[torch.Tensor]]:
