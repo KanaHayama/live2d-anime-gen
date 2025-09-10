@@ -423,3 +423,4 @@ examples/live2d_models/
 # test files
 examples/*.mp4
 examples/*.json
+examples/*.task

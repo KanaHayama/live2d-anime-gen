@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This project is a Python package (`live2d-anime-gen`) that converts facial landmarks to Live2D v3 model parameters for animation generation. Current implementation processes face videos using InsightFace 106-point detection. Future development will include audio-to-video generation using deep learning models.
+This project is a Python package (`live2d-anime-gen`) that converts facial landmarks to Live2D v3 model parameters for animation generation. Current implementation processes face videos using MediaPipe 478-point 3D landmark detection with iris tracking. Future development will include audio-to-video generation using deep learning models.
 
 ## Key Requirements
 
@@ -15,9 +15,10 @@ This project is a Python package (`live2d-anime-gen`) that converts facial landm
 ### Core Functionality
 1. **Video Processing**: Process face videos → Live2D animation videos (current)
 2. **Audio Processing**: Process audio → Live2D animation videos (future ML model)
-3. **Parameter Mapping**: Convert landmarks to Live2D v3 model parameters using PyTorch
-4. **CUDA Acceleration**: GPU-only processing for performance
-5. **Extensible Architecture**: Base class design for different input modalities
+3. **Parameter Mapping**: Convert 3D landmarks to Live2D v3 model parameters using PyTorch
+4. **3D Head Pose**: Utilize depth information for accurate head rotation estimation
+5. **Iris Tracking**: Dedicated iris landmarks for precise eye gaze control
+6. **Extensible Architecture**: Base class design for different input modalities
 
 ### Technical Standards
 
@@ -35,7 +36,7 @@ This project is a Python package (`live2d-anime-gen`) that converts facial landm
 
 ### Dependencies
 - Dependencies are documented in README.md
-- Core package requires: torch, insightface, opencv-python
+- Core package requires: torch, mediapipe, opencv-python
 - Example demos require additional packages for Live2D rendering
 
 ### Deliverables
@@ -53,11 +54,11 @@ When implementing changes:
 
 ## Key Findings from Codebase Analysis
 
-### InsightFace Integration
-- **Face Detection**: Uses FaceAnalysis class with CUDA provider only
-- **Landmark Format**: Returns 106 landmarks as (106, 2) PyTorch tensors on GPU
-- **Model Support**: Only 106-point landmark model supported
-- **GPU Acceleration**: CUDA execution provider required
+### MediaPipe Integration
+- **Face Detection**: Uses Face Mesh with refine_landmarks=True for iris tracking
+- **Landmark Format**: Returns 478 3D landmarks as (478, 3) PyTorch tensors on GPU
+- **3D Coordinates**: x, y normalized to [0,1], z represents depth relative to head center
+- **Iris Support**: Dedicated iris landmarks (468-477) for eye gaze tracking
 
 ### Live2D-py Integration
 - **Model Support**: Only Live2D v3 models (.model3.json format)

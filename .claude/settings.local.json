@@ -4,11 +4,16 @@
       "Bash(python:*)",
       "WebSearch",
       "WebFetch(domain:docs.nvidia.com)",
-      "WebFetch(domain:pypi.org)"
+      "WebFetch(domain:pypi.org)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:catalog.ngc.nvidia.com)",
+      "WebFetch(domain:developers.google.com)",
+      "WebFetch(domain:ai.google.dev)"
     ],
     "additionalDirectories": [
       "D:\\Project\\Other\\insightface",
-      "D:\\Project\\Other\\live2d-py"
+      "D:\\Project\\Other\\live2d-py",
+      "D:\\Project\\Other\\3DDFA-V3\\"
     ]
   }
 }

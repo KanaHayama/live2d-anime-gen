@@ -61,43 +61,57 @@ SMOOTHING_FACTORS = {
     "body": 0.4,
 }
 
-# InsightFace 106-point landmark indices  
-# Based on actual observation from generated landmark visualization
+# MediaPipe 478-point landmark indices (468 face + 10 iris)
+# Based on MediaPipe Face Mesh with refine_landmarks=True
+# Indices from official MediaPipe face_mesh_connections.py
 LANDMARK_INDICES = {
-    "jaw": list(range(0, 33)),        # Face contour (0-32, 33 points)
-    "right_eyebrow": list(range(43, 52)),   # User's RIGHT eyebrow (left side of image, 43-51, 9 points)
-    "left_eyebrow": list(range(97, 106)),   # User's LEFT eyebrow (right side of image, 97-105, 9 points)  
-    "nose": list(range(72, 87)),            # Nose (72-86, 15 points)
-    "right_eye": list(range(33, 43)),       # User's RIGHT eye (left side of image, 33-42, 10 points)
-    "left_eye": list(range(87, 97)),        # User's LEFT eye (right side of image, 87-96, 10 points)
-    "mouth": list(range(52, 72)),           # Mouth (52-71, 20 points)
-    "left_iris": [88, 92],                  # User's LEFT iris (right side of image)
-    "right_iris": [34, 38],                 # User's RIGHT iris (left side of image)
-    "extra": [],                            # No extra points
+    "face_oval": [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109],  # Complete 36-point face boundary
+    "left_eyebrow": [46, 52, 53, 63, 65, 66, 70, 105, 107],  # FACEMESH_RIGHT_EYEBROW (right from viewer's perspective)
+    "right_eyebrow": [276, 282, 283, 293, 295, 296, 300, 334, 336],  # FACEMESH_LEFT_EYEBROW (left from viewer's perspective)
+    "left_eye": [7, 33, 133, 144, 145, 153, 154, 155, 161, 163, 246],  # FACEMESH_RIGHT_EYE (right from viewer's perspective)
+    "right_eye": [249, 262, 263, 373, 374, 380, 381, 382, 386, 387, 388, 390, 466],  # FACEMESH_LEFT_EYE (left from viewer's perspective)
+    "lips": [
+        # Upper outer lip
+        61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291,
+        # Lower outer lip
+        146, 91, 181, 84, 17, 314, 405, 321, 375,
+        # Upper inner lip
+        78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308,
+        # Lower inner lip
+        95, 88, 178, 87, 14, 317, 402, 318, 324
+    ],  # Complete 40-point lips (outer + inner contours)
+    "left_iris": list(range(468, 473)),           # Left iris: center + 4 contour points
+    "right_iris": list(range(473, 478)),          # Right iris: center + 4 contour points
 }
 
 # Specific landmark points for calculations
-# All indices refer to absolute positions in the 106-point landmark array
+# All indices refer to absolute positions in the 478-point landmark array
 LANDMARK_POINTS = {
-    # Eye points (corrected naming: left side of image = user's right eye)
-    "left_eye_corners": [89, 93],           # [inner_corner, outer_corner] - User's LEFT eye (right side of image)
-    "left_eye_top_points": [95, 94, 96], # Upper eyelid points, inner to outer
-    "left_eye_bottom_points": [90, 87, 91], # Lower eyelid points, inner to outer
+    # Eye points for MediaPipe (using key eye contour points)
+    "left_eye_corners": [33, 133],              # [inner_corner, outer_corner] - Left eye
+    "left_eye_top_points": [159, 145, 158],     # Upper eyelid key points
+    "left_eye_bottom_points": [144, 163, 7],    # Lower eyelid key points
     
-    "right_eye_corners": [39, 35],          # [inner_corner, outer_corner] - User's RIGHT eye (left side of image)
-    "right_eye_top_points": [42, 40, 41], # Upper eyelid points, inner to outer
-    "right_eye_bottom_points": [37, 33, 36], # Lower eyelid points, inner to outer
+    "right_eye_corners": [362, 263],            # [inner_corner, outer_corner] - Right eye
+    "right_eye_top_points": [386, 374, 385],    # Upper eyelid key points
+    "right_eye_bottom_points": [373, 390, 249], # Lower eyelid key points
     
     # Mouth points
-    "mouth_corners": [52, 61],              # [left_corner, right_corner]
-    "mouth_center_points": [71, 53],        # [top_center, bottom_center]
+    "mouth_corners": [61, 291],                 # [left_corner, right_corner]
+    "mouth_center_points": [13, 14],            # [upper_lip_center, lower_lip_center]
     
-    # Face structure points
-    "nose_tip": 86,                         # Nose tip
-    "face_left_points": [1, 9, 10, 11, 12, 13, 14, 15, 16, 2, 3, 4, 5, 6, 7, 8, 0],   # Left face contour for yaw, top to bottom
-    "face_right_points": [17, 25, 26, 27, 28, 29, 30, 31, 32, 18, 19, 20, 21, 22, 23, 24, 0], # Right face contour for yaw, top to bottom
+    # Face structure points for 3D pose estimation
+    "nose_tip": 1,                              # Nose tip (kept for 3D pose calculations)
+    "face_left_points": [10, 21, 54, 58, 93, 127, 132, 136, 148, 149, 150],  # Left side of face oval
+    "face_right_points": [356, 361, 365, 377, 378, 379, 400, 288, 297, 323, 332, 338, 350],  # Right side of face oval
     
-    # Iris points (corrected naming)
-    "left_iris": [88, 92],                  # User's LEFT iris (right side of image)
-    "right_iris": [34, 38],                 # User's RIGHT iris (left side of image)
+    # Iris points for pupil tracking (MediaPipe specific)
+    "left_iris": list(range(468, 473)),         # Left iris: [center, right, top, left, bottom]
+    "right_iris": list(range(473, 478)),        # Right iris: [center, right, top, left, bottom]
+    
+    # Additional 3D reference points for head pose
+    "forehead_center": 9,                       # Forehead center point
+    "chin_tip": 152,                            # Chin bottom point
+    "left_temple": 54,                          # Left temple
+    "right_temple": 284,                        # Right temple
 }

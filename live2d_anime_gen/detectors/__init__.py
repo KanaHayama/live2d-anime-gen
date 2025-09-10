@@ -1,7 +1,7 @@
 """Detector implementations for landmark detection."""
 
-from .insightface_detector import InsightFaceDetector
+from .mediapipe_detector import MediaPipeDetector
 
 __all__ = [
-    "InsightFaceDetector",
+    "MediaPipeDetector",
 ]

@@ -1,6 +1,6 @@
 # Live2D Anime Generation
 
-A Python package for generating Live2D animations from multiple input sources. Currently supports face video processing with InsightFace 106-point detection. Future versions will include audio-to-animation generation using deep learning models.
+A Python package for generating Live2D animations from multiple input sources. Currently supports face video processing with MediaPipe 478-point 3D landmark detection including iris tracking. Future versions will include audio-to-animation generation using deep learning models.
 
 ## Environment Setup
 
@@ -14,8 +14,7 @@ A Python package for generating Live2D animations from multiple input sources. C
 
 1. Create conda environment with Python 3.11
 2. Install PyTorch with CUDA support
-3. Install core dependencies (insightface, onnxruntime-gpu)
-4. Install Live2D rendering dependencies (live2d-py, pygame, PyOpenGL)
+3. Install dependencies
 
 ## Dependencies
 
@@ -23,13 +22,12 @@ A Python package for generating Live2D animations from multiple input sources. C
 The following are top-level dependencies that need to be manually installed.
 
 - **torch** (pip): GPU tensor operations
-- **insightface** (pip): 106-point facial landmark detection (CUDA only)
-- **onnxruntime-gpu** (pip): GPU-accelerated inference for InsightFace models
+- **mediapipe** (pip): 478-point 3D facial landmark detection with iris tracking
+- **opencv-python** (pip): Video I/O and image processing
 - **ijson** (pip): Streaming JSON parser for memory-efficient data I/O
 - **PyNvVideoCodec** (pip): NVIDIA hardware-accelerated video encoding/decoding with NVENC
 - **live2d-py** (pip): Live2D v3 model runtime and rendering
 - **pygame** (pip): Window management for Live2D display
-- **opencv-python** (pip): Video I/O and image processing
 
 ### Example Dependencies
 Additional top-level dependencies required only for running the example scripts, beyond the core dependencies listed above.
@@ -39,10 +37,10 @@ Additional top-level dependencies required only for running the example scripts,
 ## Quick Start
 
 ```python
-from live2d_anime_gen import InsightFaceDetector, FaceMapper, Live2DRenderer, ParameterSmoother, VideoReader, VideoWriter
+from live2d_anime_gen import MediaPipeDetector, FaceMapper, Live2DRenderer, ParameterSmoother, VideoReader, VideoWriter
 
-# Initialize components (CUDA required)
-detector = InsightFaceDetector(det_size=(640, 640))
+# Initialize components
+detector = MediaPipeDetector()
 mapper = FaceMapper(smooth_factor=0.7)
 smoother = ParameterSmoother(method="ema", alpha=0.7)
 renderer = Live2DRenderer("path/to/model.model3.json", canvas_size=(1280, 720))

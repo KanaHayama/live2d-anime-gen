@@ -1,7 +1,8 @@
-"""Face landmark to Live2D parameter mapper with independent parameter calculation."""
+"""Face landmark to Live2D parameter mapper with 3D coordinate support and iris tracking."""
 
 from typing import Tuple, Optional, Union, Iterator, List
 import torch
+import numpy as np
 
 from ..core.base_mapper import BaseLandmarkMapper
 from ..core.types import Live2DParameters
@@ -11,16 +12,18 @@ from ..processors.stream_utils import is_iterator, apply_to_stream
 
 class FaceMapper(BaseLandmarkMapper):
     """
-    Maps 106 facial landmarks from InsightFace to Live2D parameters.
+    Maps 478 3D facial landmarks from MediaPipe to Live2D parameters.
+    
+    Utilizes 3D coordinates (x, y, z) for improved head pose estimation.
+    Includes iris tracking using MediaPipe's dedicated iris landmarks (468-477).
     
     Key design principle: Each parameter group (eyes, mouth, head pose, eye gaze)
     is calculated independently to avoid unwanted coupling.
-    
-    NOTE: All parameter mappings and thresholds in this class have been calibrated
-    specifically for user 'kana' -> Live2D model 'haru_greeter_pro_jp'.
-    The calibration is based on analysis of kana's facial expressions and movements
-    to ensure optimal animation quality for the haru model.
     """
+    
+    # Bias values calculated from input video analysis to center head pose
+    YAW_BIAS = -0.32    # Left-right rotation bias (degrees)
+    PITCH_BIAS = -27.74 # Up-down rotation bias (degrees) - corrects excessive downward tilt
     
     def __init__(self, smooth_factor: float):
         """
@@ -41,7 +44,7 @@ class FaceMapper(BaseLandmarkMapper):
         Unified mapping interface supporting single landmarks, batch, and streaming modes.
         
         Args:
-            input_data: Input landmarks - single tensor, list, or iterator of Optional[torch.Tensor]
+            input_data: Input 3D landmarks - single tensor (478, 3), list, or iterator
             image_shape: Original image shape (height, width) - required for single input
             
         Returns:
@@ -66,27 +69,33 @@ class FaceMapper(BaseLandmarkMapper):
                    landmarks: torch.Tensor,
                    image_shape: Tuple[int, int]) -> Live2DParameters:
         """
-        Map 106 facial landmarks to Live2D parameters for a single frame.
+        Map 478 3D facial landmarks to Live2D parameters for a single frame.
         
         Each parameter is calculated independently:
-        - Eye openness: Based on eye aspect ratio only
-        - Mouth: Based on mouth shape only  
-        - Head pose: Based on face geometry
-        - Eye gaze: Based on iris position (if available)
+        - Eye openness: Based on eye aspect ratio
+        - Mouth: Based on mouth shape  
+        - Head pose: Using 3D coordinates for accurate estimation
+        - Eye gaze: Using dedicated iris landmarks (468-477)
         
         Args:
-            landmarks: 106 landmark points as torch tensor (106, 2) in pixel coords
+            landmarks: 478 3D landmark points as torch tensor (478, 3) with normalized coords
             image_shape: Image dimensions (height, width)
             
         Returns:
             Live2D parameters
         """
-        # Landmarks from InsightFace are already normalized to [0, 1]
-        # Keep original landmarks for pixel-space calculations (roll angle)
-        landmarks_pixel = landmarks.clone() * torch.tensor([image_shape[1], image_shape[0]], device=landmarks.device)
+        # MediaPipe landmarks are already normalized [0, 1] for x, y
+        # Extract 2D and 3D components
+        landmarks_2d = landmarks[:, :2]  # Just x, y for 2D calculations
+        landmarks_3d = landmarks  # Full x, y, z for 3D calculations
         
-        # Use normalized landmarks directly
-        landmarks_norm = landmarks.clone()
+        # Convert to pixel space for certain calculations
+        landmarks_pixel = landmarks_2d.clone()
+        landmarks_pixel[:, 0] *= image_shape[1]  # width
+        landmarks_pixel[:, 1] *= image_shape[0]  # height
+        
+        # Use normalized 2D landmarks for most calculations
+        landmarks_norm = landmarks_2d.clone()
         
         # Calculate face size for normalization (but don't transform landmarks)
         face_size = self._calculate_face_size(landmarks_norm)
@@ -110,14 +119,14 @@ class FaceMapper(BaseLandmarkMapper):
             mouth_open_y=self._calculate_mouth_openness(landmarks_norm),
             mouth_form=self._calculate_mouth_form(landmarks_norm),
             
-            # Head pose - calculated from face geometry
-            angle_x=self._calculate_head_yaw(landmarks_norm),
-            angle_y=self._calculate_head_pitch(landmarks_norm),
-            angle_z=self._calculate_head_roll(landmarks_pixel, image_shape),
+            # Head pose - using 3D coordinates for better accuracy
+            angle_x=self._calculate_head_yaw_3d(landmarks_3d),
+            angle_y=self._calculate_head_pitch_3d(landmarks_3d),
+            angle_z=self._calculate_head_roll_3d(landmarks_3d),
             
-            # Eye gaze - only depends on iris position if available
-            eye_ball_x=self._calculate_eye_ball_x(landmarks_norm),
-            eye_ball_y=self._calculate_eye_ball_y(landmarks_norm),
+            # Eye gaze - using dedicated iris landmarks from MediaPipe
+            eye_ball_x=self._calculate_eye_ball_x_iris(landmarks_3d),
+            eye_ball_y=self._calculate_eye_ball_y_iris(landmarks_3d),
             
             # Eyebrows - only depends on brow position relative to eyes
             brow_l_y=self._calculate_eyebrow_height(landmarks_norm, "left"),
@@ -210,6 +219,10 @@ class FaceMapper(BaseLandmarkMapper):
             t = min((ear_normalized - large_open_threshold) / (large_open_threshold * 0.5), 1.0)
             openness = 1.2 + t * 0.8
         
+        # Ensure openness is a tensor
+        if not isinstance(openness, torch.Tensor):
+            openness = torch.tensor(openness, device=landmarks.device)
+        
         return torch.clamp(openness, 0, 2)
     
     def _calculate_mouth_openness(self, landmarks: torch.Tensor) -> torch.Tensor:
@@ -252,7 +265,11 @@ class FaceMapper(BaseLandmarkMapper):
             openness = torch.tensor(1.0, device=landmarks.device)
         else:
             t = (mar_normalized - closed_threshold) / (open_threshold - closed_threshold)
-            openness = torch.pow(t, 0.8)
+            openness = torch.pow(t, 0.8) if isinstance(t, torch.Tensor) else t ** 0.8
+        
+        # Ensure openness is a tensor
+        if not isinstance(openness, torch.Tensor):
+            openness = torch.tensor(openness, device=landmarks.device)
         
         return torch.clamp(openness, 0, 1)
     
@@ -291,6 +308,10 @@ class FaceMapper(BaseLandmarkMapper):
         # Negative offset (corners up) = smile
         # Positive offset (corners down) = frown
         form = -normalized_offset * 10.0 + 1.0
+        
+        # Ensure form is a tensor
+        if not isinstance(form, torch.Tensor):
+            form = torch.tensor(form, device=landmarks.device)
         
         return torch.clamp(form, 0, 2)
     
@@ -515,3 +536,365 @@ class FaceMapper(BaseLandmarkMapper):
         brow_height = torch.clamp(vertical_dist * 3.0 - 0.5, -1, 1)
         
         return brow_height
+    
+    # New 3D methods for MediaPipe landmarks
+    def _calculate_head_yaw_3d(self, landmarks: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate head yaw (left-right rotation) using comprehensive 3D analysis.
+        
+        Uses multiple 3D cues:
+        1. Face contour depth asymmetry (primary indicator)
+        2. Nose tip deviation from face center
+        3. Eye separation changes during rotation
+        4. Temple depth differences
+        
+        Args:
+            landmarks: 3D landmarks tensor (478, 3) with x, y, z coordinates
+            
+        Returns:
+            Yaw angle in degrees (not clamped to allow Live2D renderer to handle limits)
+        """
+        # Use correct MediaPipe face contour landmarks
+        face_oval_indices = LANDMARK_INDICES["face_oval"]
+        face_points = landmarks[face_oval_indices]
+        
+        # Split face contour into left and right sides based on x-coordinate
+        face_center_x = face_points[:, 0].mean()
+        left_face_mask = face_points[:, 0] < face_center_x
+        right_face_mask = face_points[:, 0] > face_center_x
+        
+        left_face_points = face_points[left_face_mask]
+        right_face_points = face_points[right_face_mask]
+        
+        # Feature 1: Face contour depth asymmetry (strongest indicator)
+        if len(left_face_points) > 0 and len(right_face_points) > 0:
+            left_depth = left_face_points[:, 2].mean()
+            right_depth = right_face_points[:, 2].mean()
+            
+            # When turning left: right side closer (smaller z), left side farther (larger z)
+            # When turning right: left side closer (smaller z), right side farther (larger z)
+            depth_asymmetry = right_depth - left_depth
+        else:
+            depth_asymmetry = torch.tensor(0.0, device=landmarks.device)
+        
+        # Feature 2: Nose tip horizontal deviation
+        nose_tip = landmarks[LANDMARK_POINTS["nose_tip"]]
+        # Use eye centers for more stable face center calculation
+        left_eye_center = landmarks[LANDMARK_POINTS["left_eye_corners"]].mean(dim=0)
+        right_eye_center = landmarks[LANDMARK_POINTS["right_eye_corners"]].mean(dim=0)
+        stable_face_center_x = (left_eye_center[0] + right_eye_center[0]) / 2
+        
+        nose_deviation = nose_tip[0] - stable_face_center_x
+        
+        # Feature 3: Eye separation changes (perspective effect)
+        inter_eye_distance = torch.norm(right_eye_center - left_eye_center)
+        # Normalize by expected distance (this varies with head rotation)
+        # During yaw rotation, eye separation appears to change due to perspective
+        
+        # Feature 4: Temple depth difference for additional validation
+        left_temple = landmarks[LANDMARK_POINTS["left_temple"]]
+        right_temple = landmarks[LANDMARK_POINTS["right_temple"]]
+        temple_depth_diff = right_temple[2] - left_temple[2]
+        
+        # Feature 5: Face width asymmetry
+        left_face_width = torch.abs(left_face_points[:, 0] - stable_face_center_x).mean()
+        right_face_width = torch.abs(right_face_points[:, 0] - stable_face_center_x).mean()
+        width_asymmetry = (right_face_width - left_face_width) / (right_face_width + left_face_width + 1e-6)
+        
+        # Combine all features with calibrated weights
+        # Primary: depth asymmetry (most reliable for 3D)
+        # Secondary: nose deviation (visible in 2D projection)
+        # Tertiary: temple depth and width asymmetry (validation cues)
+        
+        yaw_angle = (
+            depth_asymmetry * 180.0 +      # Primary 3D cue - increased sensitivity
+            nose_deviation * 120.0 +       # Secondary 2D projection cue  
+            temple_depth_diff * 60.0 +     # Additional 3D validation
+            width_asymmetry * 40.0         # Geometric asymmetry
+        )
+        
+        # Apply adaptive scaling based on detected confidence
+        # If multiple cues agree, trust the result more
+        cue_agreement = torch.abs(depth_asymmetry * 180.0) + torch.abs(nose_deviation * 120.0)
+        confidence_boost = 1.0 + (cue_agreement / 30.0) * 0.3  # Up to 30% boost for strong signals
+        
+        yaw_angle = yaw_angle * confidence_boost
+        
+        # Apply bias correction to center the head pose
+        yaw_angle = yaw_angle - self.YAW_BIAS
+        
+        # DO NOT clamp - let Live2D renderer handle the limits
+        # This allows for more expressive head movements beyond ±30 degrees
+        return yaw_angle
+    
+    def _calculate_head_pitch_3d(self, landmarks: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate head pitch (up-down rotation) using advanced 3D analysis.
+        
+        Uses multiple 3D depth cues:
+        1. Forehead to chin depth gradient
+        2. Nose tip relative depth position  
+        3. Eye to mouth vertical depth relationship
+        4. Face profile curvature analysis
+        
+        Args:
+            landmarks: 3D landmarks tensor (478, 3) with x, y, z coordinates
+            
+        Returns:
+            Pitch angle in degrees (not clamped to allow Live2D renderer to handle limits)
+        """
+        # Get key facial reference points
+        forehead = landmarks[LANDMARK_POINTS["forehead_center"]]
+        nose_tip = landmarks[LANDMARK_POINTS["nose_tip"]]
+        chin = landmarks[LANDMARK_POINTS["chin_tip"]]
+        
+        # Get eye centers for stable reference
+        left_eye_center = landmarks[LANDMARK_POINTS["left_eye_corners"]].mean(dim=0)
+        right_eye_center = landmarks[LANDMARK_POINTS["right_eye_corners"]].mean(dim=0)
+        eye_level = (left_eye_center + right_eye_center) / 2
+        
+        # Get mouth center for additional reference
+        mouth_corners = landmarks[LANDMARK_POINTS["mouth_corners"]]
+        mouth_center = mouth_corners.mean(dim=0)
+        
+        # Feature 1: Forehead-to-chin depth gradient (primary indicator)
+        # When looking up: chin closer (smaller z), forehead farther (larger z)
+        # When looking down: forehead closer (smaller z), chin farther (larger z)
+        vertical_depth_gradient = chin[2] - forehead[2]
+        
+        # Feature 2: Nose tip depth relative to eye level
+        # Nose should be approximately at same depth as eyes in neutral position
+        nose_to_eye_depth = nose_tip[2] - eye_level[2]
+        
+        # Feature 3: Eye-to-mouth depth relationship
+        eye_to_mouth_depth = mouth_center[2] - eye_level[2]
+        
+        # Feature 4: Vertical position changes (2D projection cues)
+        # Calculate face height for normalization
+        face_height = torch.abs(forehead[1] - chin[1])
+        
+        # Nose vertical position relative to expected neutral
+        eye_to_chin_midpoint_y = (eye_level[1] + chin[1]) / 2
+        nose_vertical_deviation = (nose_tip[1] - eye_to_chin_midpoint_y) / (face_height + 1e-6)
+        
+        # Feature 5: Face profile curvature (advanced 3D analysis)
+        # Sample points along vertical face profile
+        profile_points = torch.stack([forehead, eye_level, nose_tip, mouth_center, chin])
+        
+        # Calculate curvature changes in z-direction along y-axis
+        # Sort by y-coordinate for proper ordering
+        y_coords = profile_points[:, 1]
+        z_coords = profile_points[:, 2]
+        
+        # Approximate face profile curvature
+        if len(profile_points) >= 3:
+            # Calculate second derivative approximation (curvature)
+            z_diff1 = z_coords[1:] - z_coords[:-1]
+            if len(z_diff1) >= 2:
+                z_diff2 = z_diff1[1:] - z_diff1[:-1]
+                profile_curvature = z_diff2.mean()
+            else:
+                profile_curvature = torch.tensor(0.0, device=landmarks.device)
+        else:
+            profile_curvature = torch.tensor(0.0, device=landmarks.device)
+        
+        # Combine all features with optimized weights
+        pitch_angle = (
+            vertical_depth_gradient * 200.0 +    # Primary 3D depth gradient  
+            nose_to_eye_depth * 150.0 +          # Nose depth deviation
+            eye_to_mouth_depth * 80.0 +          # Mouth depth relationship
+            nose_vertical_deviation * 60.0 +     # 2D projection cue
+            profile_curvature * 100.0            # Face curvature analysis
+        )
+        
+        # Apply confidence-based scaling
+        # Strong depth gradients get higher confidence
+        confidence_indicators = torch.abs(vertical_depth_gradient * 200.0) + torch.abs(nose_to_eye_depth * 150.0)
+        confidence_boost = 1.0 + (confidence_indicators / 25.0) * 0.25  # Up to 25% boost
+        
+        pitch_angle = pitch_angle * confidence_boost
+        
+        # Apply bias correction to center the head pose
+        pitch_angle = pitch_angle - self.PITCH_BIAS
+        
+        # DO NOT clamp - let Live2D renderer handle the limits
+        return pitch_angle
+    
+    def _calculate_head_roll_3d(self, landmarks: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate head roll (left-right tilt) using enhanced 3D analysis.
+        
+        Uses multiple geometric cues:
+        1. 3D eye line vector analysis
+        2. Face contour symmetry changes during roll
+        3. Depth-corrected angle calculations  
+        4. Temple and cheek depth relationships
+        
+        Args:
+            landmarks: 3D landmarks tensor (478, 3) with x, y, z coordinates
+            
+        Returns:
+            Roll angle in degrees (not clamped to allow Live2D renderer to handle limits)
+        """
+        # Get eye corner landmarks for precise eye line calculation
+        left_eye_corners = landmarks[LANDMARK_POINTS["left_eye_corners"]]
+        right_eye_corners = landmarks[LANDMARK_POINTS["right_eye_corners"]]
+        
+        # Calculate eye centers with full 3D information
+        left_eye_center = left_eye_corners.mean(dim=0)
+        right_eye_center = right_eye_corners.mean(dim=0)
+        
+        # Feature 1: Primary 3D eye line vector
+        eye_vector_3d = right_eye_center - left_eye_center
+        
+        # Calculate roll angle using 2D projection (x, y plane)
+        # This is the primary roll indicator
+        primary_roll = torch.atan2(eye_vector_3d[1], eye_vector_3d[0])
+        primary_roll_deg = torch.rad2deg(primary_roll)
+        
+        # Feature 2: 3D depth correction for perspective effects
+        # When head is tilted, the eye depths change relative to each other
+        eye_depth_difference = right_eye_center[2] - left_eye_center[2]
+        
+        # Feature 3: Face contour symmetry analysis
+        face_oval_indices = LANDMARK_INDICES["face_oval"]
+        face_points = landmarks[face_oval_indices]
+        
+        # Split face contour into upper and lower halves
+        face_center_y = face_points[:, 1].mean()
+        upper_face_mask = face_points[:, 1] < face_center_y
+        lower_face_mask = face_points[:, 1] > face_center_y
+        
+        upper_face_points = face_points[upper_face_mask]
+        lower_face_points = face_points[lower_face_mask]
+        
+        # Calculate horizontal asymmetry in upper vs lower face
+        if len(upper_face_points) > 0 and len(lower_face_points) > 0:
+            upper_x_range = upper_face_points[:, 0].max() - upper_face_points[:, 0].min()
+            lower_x_range = lower_face_points[:, 0].max() - lower_face_points[:, 0].min()
+            face_asymmetry = (upper_x_range - lower_x_range) / (upper_x_range + lower_x_range + 1e-6)
+        else:
+            face_asymmetry = torch.tensor(0.0, device=landmarks.device)
+        
+        # Feature 4: Temple depth relationship
+        left_temple = landmarks[LANDMARK_POINTS["left_temple"]]
+        right_temple = landmarks[LANDMARK_POINTS["right_temple"]]
+        
+        # During roll, temples move to different depths
+        temple_depth_asymmetry = (right_temple[2] - left_temple[2])
+        
+        # Feature 5: Eyebrow line angle as secondary validation
+        left_eyebrow_indices = LANDMARK_INDICES["left_eyebrow"]
+        right_eyebrow_indices = LANDMARK_INDICES["right_eyebrow"]
+        
+        left_eyebrow_center = landmarks[left_eyebrow_indices].mean(dim=0)
+        right_eyebrow_center = landmarks[right_eyebrow_indices].mean(dim=0)
+        
+        eyebrow_vector = right_eyebrow_center - left_eyebrow_center
+        eyebrow_roll = torch.atan2(eyebrow_vector[1], eyebrow_vector[0])
+        eyebrow_roll_deg = torch.rad2deg(eyebrow_roll)
+        
+        # Combine all features with appropriate weights
+        # Primary: eye line angle (most reliable)
+        # Secondary: depth and asymmetry cues for validation
+        roll_angle = (
+            primary_roll_deg * 1.0 +              # Primary 2D angle measurement
+            eyebrow_roll_deg * 0.3 +              # Eyebrow line validation
+            eye_depth_difference * 20.0 +         # 3D depth correction
+            temple_depth_asymmetry * 15.0 +       # Temple depth cue
+            face_asymmetry * 8.0                  # Face contour asymmetry
+        )
+        
+        # Apply stability filtering - roll changes should be smooth
+        # For roll, we can be more conservative as it's typically smaller movement
+        confidence_indicators = torch.abs(primary_roll_deg) + torch.abs(eyebrow_roll_deg * 0.3)
+        confidence_scaling = 1.0 + (confidence_indicators / 20.0) * 0.2  # Up to 20% boost
+        
+        roll_angle = roll_angle * confidence_scaling
+        
+        # Apply correct sign convention for Live2D
+        # Negative for clockwise tilt (right shoulder down)
+        # Positive for counter-clockwise tilt (left shoulder down)
+        roll_angle = -roll_angle  # Invert for Live2D coordinate system
+        
+        # DO NOT clamp - let Live2D renderer handle the limits
+        return roll_angle
+    
+    def _calculate_eye_ball_x_iris(self, landmarks: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate horizontal eye gaze using MediaPipe iris landmarks.
+        Uses dedicated iris center points (468, 473) for accurate tracking.
+        
+        Args:
+            landmarks: 3D landmarks tensor (478, 3) with iris landmarks
+            
+        Returns:
+            Eye ball X position (-1 to 1)
+        """
+        # MediaPipe iris landmarks: 468-472 (left), 473-477 (right)
+        # First point in each group is the iris center
+        left_iris_center = landmarks[468]  # Left iris center
+        right_iris_center = landmarks[473]  # Right iris center
+        
+        # Get eye corners for reference
+        left_eye_corners = landmarks[LANDMARK_POINTS["left_eye_corners"]]
+        right_eye_corners = landmarks[LANDMARK_POINTS["right_eye_corners"]]
+        
+        # Calculate eye centers
+        left_eye_center = left_eye_corners.mean(dim=0)
+        right_eye_center = right_eye_corners.mean(dim=0)
+        
+        # Calculate eye widths for normalization
+        left_eye_width = torch.norm(left_eye_corners[1] - left_eye_corners[0])
+        right_eye_width = torch.norm(right_eye_corners[1] - right_eye_corners[0])
+        
+        # Calculate normalized iris offset from eye center
+        left_offset = (left_iris_center[0] - left_eye_center[0]) / (left_eye_width + 1e-6)
+        right_offset = (right_iris_center[0] - right_eye_center[0]) / (right_eye_width + 1e-6)
+        
+        # Average both eyes with scaling for visibility
+        eye_ball_x = (left_offset + right_offset) * 4.0
+        
+        return torch.clamp(eye_ball_x, -1, 1)
+    
+    def _calculate_eye_ball_y_iris(self, landmarks: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate vertical eye gaze using MediaPipe iris landmarks.
+        Uses dedicated iris center points for accurate tracking.
+        
+        Args:
+            landmarks: 3D landmarks tensor (478, 3) with iris landmarks
+            
+        Returns:
+            Eye ball Y position (-1 to 1)
+        """
+        # MediaPipe iris landmarks: 468-472 (left), 473-477 (right)
+        left_iris_center = landmarks[468]  # Left iris center
+        right_iris_center = landmarks[473]  # Right iris center
+        
+        # Use eye corners as stable reference
+        left_eye_corners = landmarks[LANDMARK_POINTS["left_eye_corners"]]
+        right_eye_corners = landmarks[LANDMARK_POINTS["right_eye_corners"]]
+        
+        # Eye corner Y average as baseline
+        left_corner_y = left_eye_corners[:, 1].mean()
+        right_corner_y = right_eye_corners[:, 1].mean()
+        
+        # Calculate iris offset from corner baseline
+        left_offset = left_iris_center[1] - left_corner_y
+        right_offset = right_iris_center[1] - right_corner_y
+        
+        # Average both eyes
+        avg_offset = (left_offset + right_offset) / 2
+        
+        # Normalize by eye height
+        left_eye_width = torch.norm(left_eye_corners[1] - left_eye_corners[0])
+        right_eye_width = torch.norm(right_eye_corners[1] - right_eye_corners[0])
+        avg_eye_width = (left_eye_width + right_eye_width) / 2
+        
+        normalized_offset = avg_offset / (avg_eye_width * 0.6 + 1e-6)  # Eye height ~0.6 * width
+        
+        # Map to Live2D coordinates with appropriate scaling
+        eye_ball_y = -normalized_offset * 3.0  # Negative for Y-up coordinate system
+        
+        return torch.clamp(eye_ball_y, -1, 1)

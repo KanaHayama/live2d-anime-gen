@@ -26,7 +26,7 @@ from tqdm import tqdm
 # Import our package
 sys.path.append(str(Path(__file__).parent.parent))
 from live2d_anime_gen import (
-    InsightFaceDetector,
+    MediaPipeDetector,
     FaceMapper,
     Live2DRenderer,
     ParameterSmoother,
@@ -96,17 +96,8 @@ Examples:
     parser.add_argument(
         "--smoothing", "-s",
         type=float,
-        default=0.5,
+        default=0.7,
         help="Parameter smoothing factor (0.0-1.0)"
-    )
-    
-    parser.add_argument(
-        "--det-size",
-        type=int,
-        nargs=2,
-        default=[640, 640],
-        metavar=("WIDTH", "HEIGHT"),
-        help="Face detection input size"
     )
     
     # Intermediate data saving
@@ -208,18 +199,16 @@ def create_landmark_frame(landmarks: Optional[torch.Tensor], canvas_size: Tuple[
         lm_pixels[:, 0] = lm_np[:, 0] * width   # x coordinates
         lm_pixels[:, 1] = lm_np[:, 1] * height  # y coordinates
         
-        # Draw landmarks as colored numbers
+        # Define colors for different facial components
         colors = {
-            'jaw': (255, 255, 255),        # White
-            'left_eye': (0, 255, 0),       # Green
-            'right_eye': (0, 255, 0),      # Green
-            'nose': (255, 0, 0),           # Blue
-            'mouth': (0, 0, 255),          # Red
-            'left_eyebrow': (255, 255, 0), # Cyan
-            'right_eyebrow': (255, 255, 0), # Cyan
-            'left_iris': (255, 0, 255),    # Magenta
-            'right_iris': (255, 0, 255),   # Magenta
-            'extra': (128, 128, 128),      # Gray
+            'face_oval': (200, 200, 200),       # Light Gray for face outline
+            'left_eye': (0, 255, 0),             # Green for left eye
+            'right_eye': (0, 200, 0),            # Darker Green for right eye
+            'left_eyebrow': (255, 255, 0),      # Cyan for left eyebrow
+            'right_eyebrow': (200, 200, 0),     # Darker Cyan for right eyebrow
+            'lips': (0, 0, 255),                 # Red for lips
+            'left_iris': (255, 0, 255),         # Magenta for left iris
+            'right_iris': (255, 0, 200),        # Darker Magenta for right iris
         }
         
         # Draw landmarks as colored numbers (no circles)
@@ -231,7 +220,8 @@ def create_landmark_frame(landmarks: Optional[torch.Tensor], canvas_size: Tuple[
             if part in colors:
                 color = colors[part]
                 for idx in indices:
-                    point_colors[idx] = color
+                    if idx < len(lm_pixels):
+                        point_colors[idx] = color
         
         # Draw all landmarks as colored numbers
         for idx in range(len(lm_pixels)):
@@ -271,7 +261,7 @@ def create_landmark_frame(landmarks: Optional[torch.Tensor], canvas_size: Tuple[
 def process_pipeline(args: argparse.Namespace, input_type: InputType, show_progress: bool) -> None:
     """Unified processing pipeline for all input types."""
     # Initialize components
-    detector = InsightFaceDetector(det_size=tuple(args.det_size))
+    detector = MediaPipeDetector()
     mapper = FaceMapper(smooth_factor=args.smoothing)
     smoother = ParameterSmoother(method="ema", alpha=args.smoothing)
     print("Initialized detector, mapper, and smoother")

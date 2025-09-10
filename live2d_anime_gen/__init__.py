@@ -9,7 +9,7 @@ __version__ = "1.0.0"
 
 from .core.input_type import InputType
 from .core.types import Live2DParameters
-from .detectors.insightface_detector import InsightFaceDetector
+from .detectors.mediapipe_detector import MediaPipeDetector
 from .mappers.face_mapper import FaceMapper
 from .processors.data_loader import DataLoader
 from .processors.input_utils import detect_input_type
@@ -24,7 +24,7 @@ __all__ = [
     "DataLoader",
     "FaceMapper",
     "InputType",
-    "InsightFaceDetector",
+    "MediaPipeDetector",
     "Live2DParameters",
     "Live2DRenderer",
     "ParameterSmoother",
